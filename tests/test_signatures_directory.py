@@ -91,7 +91,7 @@ def test_preview_requires_signature_has_watermark_and_no_side_effects(client,lay
     assert client.post(f'/api/requests/{rid}/decision',json={'outcome':'approved'}).status_code==409
     preview=client.post(f'/api/requests/{rid}/preview',json={'opinion':'已核对'}).json()
     assert preview['count']==count
-    assert preview['watermark']=='演示学生甲（请假人）-2026-10-01-3天'
+    assert preview['watermark']=='演示学生甲-2026-10-01-3天'
     for index in range(count):
         response=client.get(f"/api/previews/{preview['id']}/{index}")
         assert response.status_code==200
@@ -157,7 +157,7 @@ def test_signature_snapshot_survives_replacement_and_retry(client,monkeypatch):
 
 def test_watermark_is_pure_black_and_survives_binary_threshold():
     source=Image.new('RGB',(600,180),'white');raw=io.BytesIO();source.save(raw,format='PNG')
-    marked=Image.open(io.BytesIO(m.watermarked_signature(raw.getvalue(),'测试同学（请假人）-2026-10-10-3天')))
+    marked=Image.open(io.BytesIO(m.watermarked_signature(raw.getvalue(),'测试同学-2026-10-10-3天')))
     colors=set(marked.getdata())
     assert colors=={(0,0,0),(255,255,255)}
     for threshold in [1,64,128,200,254]:

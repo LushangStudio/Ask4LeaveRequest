@@ -619,7 +619,7 @@ def chinese_date(value):
 
 def signature_watermark(row):
     days = (date.fromisoformat(row.ends)-date.fromisoformat(row.starts)).days+1
-    return f"{row.snapshot['name']}（请假人）-{row.starts}-{days}天"
+    return f"{row.snapshot['name']}-{row.starts}-{days}天"
 
 def watermarked_signature(content,label):
     # Burn the restriction into image pixels; the PDF contains no unmarked source image.
