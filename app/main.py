@@ -40,6 +40,7 @@ from reportlab.platypus import Image as PDFImage, KeepTogether
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 from app.directory import read_directories, DirectoryConfig
 from app.student_import import preview_import
+from app.leave_dates import leave_end_limit
 from app.test_login import TestQueryRedaction, load_test_login
 from app.uis import UISSettings, UISOAuthClient, OAuthProviderError
 
@@ -341,7 +342,7 @@ def health(): return {'status':'ok','mode':os.getenv('APP_MODE','disabled')}
 def runtime():
     return {'mode':os.getenv('APP_MODE','disabled'),'demo_login':os.getenv('APP_MODE')=='demo',
             'uis_login':os.getenv('APP_MODE')=='production' and app.state.uis_settings.configured,
-            'app_list_url':os.getenv('APP_LIST_URL','/')}
+            'app_list_url':os.getenv('APP_LIST_URL','/'),'max_end_date':leave_end_limit().isoformat()}
 
 def get_uis_oauth_client():return UISOAuthClient(app.state.uis_settings)
 
@@ -488,6 +489,8 @@ class ApplicationInput(BaseModel):
         self.reason=self.reason.strip()
         if not self.reason: raise ValueError('请填写请假原因')
         if self.ends < self.starts: raise ValueError('结束日期不能早于开始日期')
+        limit=leave_end_limit()
+        if self.ends>limit:raise ValueError(f'请假结束日期不得超过当前日期后三个月（最晚 {limit}）')
         if any(not self.starts<=i.day<=self.ends for i in self.items): raise ValueError('事项日期须在请假起止日期内')
         return self
 

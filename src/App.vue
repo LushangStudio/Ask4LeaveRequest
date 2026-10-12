@@ -262,6 +262,7 @@ onMounted(async () => {
         :profile="profile"
         :busy="busy"
         :message="formMessage"
+        :max-end-date="runtime.max_end_date"
         @submit="submit"
         @message="formMessage = $event"
       />

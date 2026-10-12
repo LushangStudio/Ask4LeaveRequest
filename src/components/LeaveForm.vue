@@ -1,7 +1,12 @@
 <script setup>
 import { reactive } from "vue";
 
-defineProps({ busy: Boolean, profile: String, message: String });
+const props = defineProps({
+  busy: Boolean,
+  profile: String,
+  message: String,
+  maxEndDate: String,
+});
 const emit = defineEmits(["submit", "message"]);
 const newItem = () => ({
   id: crypto.randomUUID(),
@@ -28,6 +33,11 @@ function removeItem(index) {
   form.items.splice(index, 1);
 }
 function submit() {
+  if (props.maxEndDate && form.ends > props.maxEndDate)
+    return emit(
+      "message",
+      `请假结束日期不得超过当前日期后三个月（最晚 ${props.maxEndDate}）`,
+    );
   emit("submit", {
     starts: form.starts,
     ends: form.ends,
@@ -66,9 +76,13 @@ function submit() {
               v-model="form.ends"
               name="ends"
               type="date"
+              :max="maxEndDate"
               required
           /></label>
         </div>
+        <p v-if="maxEndDate" class="caption">
+          结束日期最晚为 {{ maxEndDate }}，按北京时间加三个自然月计算。
+        </p>
         <label
           >请假原因<textarea
             v-model="form.reason"
