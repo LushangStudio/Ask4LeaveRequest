@@ -41,9 +41,12 @@ class DirectoryConfig(StrictModel):
 
     @model_validator(mode='after')
     def check_relationships(self):
-        ids = [p.user_id for p in self.counselors + self.students]
-        if len(ids) != len(set(ids)):
-            raise ValueError('学工号不得重复，也不能同时作为学生和辅导员')
+        for members in (self.counselors,self.students):
+            ids=[p.user_id for p in members]
+            if len(ids)!=len(set(ids)):raise ValueError('同一角色中的学工号不得重复')
+        names={p.user_id:p.name for p in self.counselors}
+        if any(p.user_id in names and names[p.user_id]!=p.name for p in self.students):
+            raise ValueError('兼任学生和辅导员的同一学工号必须使用相同姓名')
         counselors = {p.user_id for p in self.counselors}
         classes = {c.class_id for c in self.classes}
         if len(classes) != len(self.classes):

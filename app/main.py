@@ -171,18 +171,20 @@ class ApprovalPreview(Base):
 
 def sync_directory(db, roster):
     classes = {c.class_id:c for c in roster.classes}
-    people = [(c.user_id, c.name, 'counselor', None, {}) for c in roster.counselors]
-    people += [(s.user_id, s.name, 'student', classes[s.class_id].counselor_ids[0],
+    student_ids={s.user_id for s in roster.students}
+    counselor_ids={c.user_id for c in roster.counselors}
+    people = [(c.user_id, c.name, 'counselor', None, {}) for c in roster.counselors if c.user_id not in student_ids]
+    people += [(s.user_id, s.name, 'both' if s.user_id in counselor_ids else 'student', classes[s.class_id].counselor_ids[0],
                 {'college': s.college, 'major': s.major, 'grade': s.grade, 'student_number': s.user_id,
                  'class_id':s.class_id,'class_name':classes[s.class_id].name,
                  'counselor_ids':classes[s.class_id].counselor_ids}) for s in roster.students]
     active = {p[0] for p in people}
     for pid, name, role, counselor, profile in people:
         person = db.get(Person, pid)
-        if person and person.role != role:
+        if person and person.role != role and 'both' not in {person.role,role}:
             raise RuntimeError('Cannot change an existing directory identity role')
         if person:
-            person.name, person.counselor, person.profile = name, counselor, profile
+            person.name, person.role, person.counselor, person.profile = name, role, counselor, profile
         else:
             db.add(Person(id=pid, name=name, role=role, counselor=counselor, profile=profile))
         db.flush()
@@ -272,9 +274,11 @@ def establish_login(db, person_id, response, old_token=None, test_digest=None,ui
                         secure=cookie_secure(),path=os.getenv('SESSION_COOKIE_PATH','/'))
 def authorized(db, rid, user):
     row=db.get(Request,rid)
-    if not row or not (row.student_id==user.id or user.role=='counselor' and db.get(RequestCounselor,(rid,user.id))):
+    if not row or not (has_role(user,'student') and row.student_id==user.id or has_role(user,'counselor') and db.get(RequestCounselor,(rid,user.id))):
         raise HTTPException(404,'申请不存在或无权查看')
     return row
+def has_role(user,role):return user.role in {role,'both'}
+def user_roles(user):return [r for r in ['student','counselor'] if has_role(user,r)]
 class LoginInput(BaseModel):
     person_id: str
 @app.post('/api/demo/login')
@@ -293,7 +297,7 @@ def logout(response:Response, leave_session:str|None=Cookie(default=None),db:Ses
 def me(user:Person=Depends(current_user),leave_session:str|None=Cookie(default=None),db:Session=Depends(db_session)):
     digest=hashlib.sha256((leave_session or '').encode()).hexdigest()
     uis=db.get(UISLoginSession,digest)
-    return {'id':user.id,'name':user.name,'role':user.role,'profile':user.profile,
+    return {'id':user.id,'name':user.name,'role':user.role,'roles':user_roles(user),'profile':user.profile,
             'auth_provider':'uis' if uis else 'test' if db.get(TestLoginSession,digest) else 'demo',
             'user_type':uis.user_type if uis else None}
 @app.get('/api/health')
@@ -382,7 +386,7 @@ def demo_identities(db:Session=Depends(db_session)):
     return [{'id':p.id,'name':p.name,'role':p.role} for p in db.scalars(select(Person).join(DirectoryMember))]
 
 def require_counselor(user):
-    if user.role != 'counselor': raise HTTPException(403,'仅辅导员可管理签名和预览审批')
+    if not has_role(user,'counselor'): raise HTTPException(403,'仅辅导员可管理签名和预览审批')
 
 class SignatureInput(BaseModel):
     image: str = Field(max_length=4_200_000)
@@ -462,7 +466,7 @@ def serialize(db,row):
       'documents':[{'id':d.id,'name':d.name,'sha256':d.digest} for d in db.scalars(select(Document).where(Document.request_id==row.id).order_by(Document.position))] if row.status=='approved' else []}
 @app.post('/api/requests',status_code=201)
 def submit(body:ApplicationInput, db:Session=Depends(db_session),user:Person=Depends(current_user)):
-    if user.role!='student': raise HTTPException(403,'仅学生可提交申请')
+    if not has_role(user,'student'): raise HTTPException(403,'仅学生可提交申请')
     counselors = user.profile.get('counselor_ids',[])
     if not counselors or not all(db.get(DirectoryMember,c) for c in counselors): raise HTTPException(409,'尚未分配有效班级辅导员，请联系管理员')
     payload=body.model_dump(mode='json'); payload.pop('idempotency_key')
@@ -486,8 +490,10 @@ def submit(body:ApplicationInput, db:Session=Depends(db_session),user:Person=Dep
         return serialize(db,old)
     return serialize(db,row)
 @app.get('/api/requests')
-def listing(db:Session=Depends(db_session),user:Person=Depends(current_user)):
-    scope = Request.student_id==user.id if user.role=='student' else select(RequestCounselor).where(RequestCounselor.request_id==Request.id,RequestCounselor.counselor_id==user.id).exists()
+def listing(view:Literal['student','counselor']|None=None,db:Session=Depends(db_session),user:Person=Depends(current_user)):
+    role=view or ('student' if has_role(user,'student') else 'counselor')
+    if not has_role(user,role):raise HTTPException(403,'无此工作台身份')
+    scope = Request.student_id==user.id if role=='student' else select(RequestCounselor).where(RequestCounselor.request_id==Request.id,RequestCounselor.counselor_id==user.id).exists()
     query=select(Request).where(scope).order_by(Request.created.desc())
     return [serialize(db,row) for row in db.scalars(query)]
 @app.get('/api/requests/{rid}')
@@ -656,7 +662,7 @@ class DecisionInput(BaseModel):
 @app.post('/api/requests/{rid}/decision')
 def decide(rid:str,body:DecisionInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):
     row=authorized(db,rid,user)
-    if user.role!='counselor': raise HTTPException(403,'仅负责该学生的辅导员可审批')
+    if not has_role(user,'counselor') or not db.get(RequestCounselor,(rid,user.id)): raise HTTPException(403,'仅负责该申请的辅导员可审批')
     if row.status!='pending':
         old=db.get(Decision,rid)
         if row.status in {'approved','rejected'} and old and old.approver_id==user.id and old.outcome==body.outcome and old.opinion==body.opinion: return serialize(db,row)
@@ -684,12 +690,16 @@ def decide(rid:str,body:DecisionInput,db:Session=Depends(db_session),user:Person
 
 class WithdrawalInput(BaseModel):
     reason:str=Field(default='',max_length=2000)
+    role:Literal['student','counselor']|None=None
 
 @app.post('/api/requests/{rid}/withdraw')
 def withdraw(rid:str,body:WithdrawalInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):
     row=authorized(db,rid,user)
-    prior='pending' if user.role=='student' else 'approved'
-    target='withdrawn' if user.role=='student' else 'revoked'
+    role=body.role or ('student' if has_role(user,'student') and (row.status in {'pending','withdrawn'} or not has_role(user,'counselor')) else 'counselor')
+    if not has_role(user,role) or (role=='student' and row.student_id!=user.id) or (role=='counselor' and not db.get(RequestCounselor,(rid,user.id))):
+        raise HTTPException(403,'无权以该身份撤回')
+    prior='pending' if role=='student' else 'approved'
+    target='withdrawn' if role=='student' else 'revoked'
     reason=body.reason.strip()
     if row.status!=prior:
         old=db.get(Withdrawal,rid)
@@ -697,7 +707,7 @@ def withdraw(rid:str,body:WithdrawalInput,db:Session=Depends(db_session),user:Pe
         raise HTTPException(409,'学生只能撤回待审批申请，辅导员只能撤回已通过请假条')
     changed=db.execute(update(Request).where(Request.id==rid,Request.status==prior).values(status=target,file_status='cancelled',generation_error=None)).rowcount
     if not changed:db.rollback();raise HTTPException(409,'申请状态已变化，请刷新')
-    db.add(Withdrawal(request_id=rid,actor_id=user.id,actor_name=user.name,actor_role=user.role,
+    db.add(Withdrawal(request_id=rid,actor_id=user.id,actor_name=user.name,actor_role=role,
                       prior_status=prior,reason=reason,at=datetime.now(timezone.utc).isoformat()))
     db.commit();db.expire_all()
     return serialize(db,db.get(Request,rid))
@@ -708,6 +718,7 @@ class PreviewInput(BaseModel):
 @app.post('/api/requests/{rid}/preview')
 def create_preview(rid:str,body:PreviewInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):
     require_counselor(user);authorized(db,rid,user)
+    if not db.get(RequestCounselor,(rid,user.id)):raise HTTPException(403,'仅负责该申请的辅导员可预览')
     row=db.scalar(select(Request).where(Request.id==rid).with_for_update().execution_options(populate_existing=True))
     if row.status!='pending': raise HTTPException(409,'该申请已经审批')
     signature=db.get(Signature,user.id)

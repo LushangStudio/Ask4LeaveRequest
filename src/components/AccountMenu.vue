@@ -51,7 +51,12 @@ onBeforeUnmount(() => {
         ><strong>{{ user.name }}</strong
         ><small
           >{{
-            user.user_type || (user.role === "counselor" ? "辅导员" : "学生")
+            user.user_type ||
+            (user.role === "both"
+              ? "学生兼辅导员"
+              : user.role === "counselor"
+                ? "辅导员"
+                : "学生")
           }}
           · {{ user.id }}</small
         ></span

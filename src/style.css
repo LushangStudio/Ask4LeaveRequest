@@ -685,3 +685,12 @@ button.danger:hover:not(:disabled) {
     transition-duration: 0.01ms !important;
   }
 }
+
+.role-switch {
+  margin: 0;
+  min-width: 100px;
+}
+.role-switch select {
+  margin-top: 4px;
+  padding: 6px 10px;
+}

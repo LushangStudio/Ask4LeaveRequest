@@ -8,6 +8,7 @@ import AccountMenu from "./components/AccountMenu.vue";
 import FeedbackDialog from "./components/FeedbackDialog.vue";
 
 const user = ref(null);
+const viewRole = ref("student");
 const identity = ref("student-a");
 const records = ref([]);
 const message = ref("");
@@ -45,7 +46,9 @@ const profile = computed(() =>
 async function loadRecords() {
   try {
     const currentUser = await api("me");
-    const rows = await api("requests");
+    const roles = currentUser.roles || [currentUser.role];
+    if (!roles.includes(viewRole.value)) viewRole.value = roles[0];
+    const rows = await api(`requests?view=${viewRole.value}`);
     user.value = currentUser;
     identity.value = currentUser.id;
     records.value = rows;
@@ -111,7 +114,7 @@ function retry(id) {
 }
 function withdraw({ id, reason }) {
   return run(async () => {
-    await api(`requests/${id}/withdraw`, { reason });
+    await api(`requests/${id}/withdraw`, { reason, role: viewRole.value });
     await loadRecords();
     message.value = "已撤回，历史记录保留。";
   });
@@ -167,6 +170,17 @@ onMounted(async () => {
         <a class="button outline" :href="runtime.app_list_url"
           >← 返回应用列表</a
         >
+        <label v-if="user?.roles?.length > 1" class="role-switch"
+          >当前视角
+          <select
+            v-model="viewRole"
+            :disabled="busy"
+            @change="run(loadRecords)"
+          >
+            <option value="student">学生</option>
+            <option value="counselor">辅导员</option>
+          </select>
+        </label>
         <AccountMenu v-if="user" :user="user" :busy="busy" @logout="logout" />
         <a
           v-else-if="runtime.uis_login"
@@ -184,9 +198,9 @@ onMounted(async () => {
     <section class="hero">
       <div>
         <small>{{
-          user?.role === "counselor" ? "APPROVAL WORKSPACE" : "LEAVE REQUEST"
+          viewRole === "counselor" ? "APPROVAL WORKSPACE" : "LEAVE REQUEST"
         }}</small>
-        <h2>{{ user?.role === "counselor" ? "审批与签署" : "申请与进度" }}</h2>
+        <h2>{{ viewRole === "counselor" ? "审批与签署" : "申请与进度" }}</h2>
         <p>课程、活动与其他事项统一申请，审批后生成签名文书。</p>
       </div>
       <div v-if="runtime.demo_login" class="identity">
@@ -198,7 +212,13 @@ onMounted(async () => {
             :value="person.id"
           >
             {{ person.name }} ·
-            {{ person.role === "student" ? "学生" : "辅导员" }}
+            {{
+              person.role === "both"
+                ? "学生兼辅导员"
+                : person.role === "student"
+                  ? "学生"
+                  : "辅导员"
+            }}
           </option>
         </select>
         <button id="login" :disabled="busy" @click="login">切换身份</button>
@@ -206,7 +226,7 @@ onMounted(async () => {
       <div v-else-if="user" class="workspace-summary">
         <strong>{{ records.length }}</strong
         ><span>{{
-          user.role === "counselor" ? "份班级申请" : "份我的申请"
+          viewRole === "counselor" ? "份班级申请" : "份我的申请"
         }}</span>
       </div>
     </section>
@@ -222,17 +242,17 @@ onMounted(async () => {
     </div>
     <FeedbackDialog :message="message" @close="message = ''" />
     <SignatureEditor
-      v-if="user?.role === 'counselor'"
+      v-if="user && viewRole === 'counselor'"
       :key="user.id"
       @saved="signatureVersion = $event.version"
     />
     <div
       class="workspace"
-      :class="{ 'single-column': user?.role !== 'student' }"
+      :class="{ 'single-column': viewRole !== 'student' }"
       :aria-busy="busy"
     >
       <LeaveForm
-        v-if="user?.role === 'student'"
+        v-if="user && viewRole === 'student'"
         :key="`${user.id}-${formVersion}`"
         :profile="profile"
         :busy="busy"
@@ -243,7 +263,7 @@ onMounted(async () => {
       <section class="panel">
         <div class="section-title">
           <h2 id="list-title">
-            {{ user?.role === "counselor" ? "我负责的申请" : "我的申请" }}
+            {{ viewRole === "counselor" ? "我负责的申请" : "我的申请" }}
           </h2>
           <button
             id="refresh"
@@ -271,7 +291,7 @@ onMounted(async () => {
             v-for="record in records"
             :key="`${user.id}-${record.id}`"
             :request="record"
-            :role="user.role"
+            :role="viewRole"
             :busy="busy"
             :signature-version="signatureVersion"
             @decision="decide"
