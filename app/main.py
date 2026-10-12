@@ -303,19 +303,27 @@ def require_uis():
         raise HTTPException(503,'UIS登录未配置')
     return app.state.uis_settings
 
+def uis_state_cookie_path():
+    # Callback can be outside the application's session-cookie path.
+    path=os.getenv('UIS_STATE_COOKIE_PATH',os.getenv('SESSION_COOKIE_PATH','/'))
+    if not path.startswith('/') or not path.endswith('/') or path.startswith('//') or any(c in path for c in '?\\#\r\n'):
+        raise RuntimeError('Invalid UIS state cookie path')
+    return path
+
 @app.get('/api/auth/login')
 def uis_login(leave_oauth_state:str|None=Cookie(default=None),db:Session=Depends(db_session),client=Depends(get_uis_oauth_client)):
     settings=require_uis()
     if leave_oauth_state:
         old=db.get(OAuthState,hashlib.sha256(leave_oauth_state.encode()).hexdigest())
         if old:db.delete(old)
-    nonce=secrets.token_urlsafe(32)
+    # Namespace only routes the shared callback; the full nonce is still validated below.
+    nonce='ask4leave.'+secrets.token_urlsafe(32)
     now=datetime.now(timezone.utc).replace(tzinfo=None)
     db.query(OAuthState).filter(OAuthState.expires < now).delete()
     db.add(OAuthState(state_hash=hashlib.sha256(nonce.encode()).hexdigest(),expires=now+timedelta(seconds=settings.state_ttl)));db.commit()
     response=RedirectResponse(client.build_authorization_url(nonce),status_code=302)
     response.set_cookie('leave_oauth_state',nonce,httponly=True,samesite='lax',secure=cookie_secure(),
-                        max_age=settings.state_ttl,path=os.getenv('SESSION_COOKIE_PATH','/'))
+                        max_age=settings.state_ttl,path=uis_state_cookie_path())
     return response
 
 @app.get('/api/auth/callback')
@@ -337,7 +345,7 @@ async def uis_callback(code:str,state:str|None=None,leave_oauth_state:str|None=C
     if not person or not db.get(DirectoryMember,user.user_id):raise HTTPException(403,'尚未配置班级或辅导员关系，请联系管理员')
     response=RedirectResponse(settings.frontend_url,status_code=303)
     establish_login(db,user.user_id,response,leave_session,uis_type=user.user_type)
-    response.delete_cookie('leave_oauth_state',path=os.getenv('SESSION_COOKIE_PATH','/'),secure=cookie_secure(),httponly=True,samesite='lax')
+    response.delete_cookie('leave_oauth_state',path=uis_state_cookie_path(),secure=cookie_secure(),httponly=True,samesite='lax')
     return response
 
 @app.post('/api/auth/logout')

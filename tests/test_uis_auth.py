@@ -178,3 +178,27 @@ def test_production_refuses_missing_uis_configuration(production):
     _,_,monkeypatch=production;monkeypatch.delenv('UIS_OAUTH_CLIENT_SECRET')
     with pytest.raises(RuntimeError,match='not configured'):
         with TestClient(m.app):pass
+
+
+def test_shared_callback_has_routing_namespace_and_separate_cookie_path(production):
+    c,control,monkeypatch=production
+    monkeypatch.setenv('SESSION_COOKIE_PATH','/leave/')
+    monkeypatch.setenv('UIS_STATE_COOKIE_PATH','/api/auth/')
+    monkeypatch.setenv('AUTH_FRONTEND_URL','https://app.example/leave/')
+    # The request is forwarded from /leave/api/auth/login; callback is the existing public path.
+    response=c.get('/api/auth/login')
+    assert 'Path=/api/auth/' in response.headers['set-cookie']
+    state=parse_qs(urlparse(response.headers['location']).query)['state'][0]
+    assert state.startswith('ask4leave.')
+    result=finish(c,state)
+    assert result.status_code==303
+    cookies=result.headers.get_list('set-cookie')
+    assert any('leave_session=' in item and 'Path=/leave/' in item for item in cookies)
+    assert any('leave_oauth_state=' in item and 'Path=/api/auth/' in item and 'Max-Age=0' in item for item in cookies)
+
+
+def test_forged_shared_callback_prefix_cannot_authenticate(production):
+    c,control,_=production
+    begin(c)
+    result=finish(c,'ask4leave.'+secrets.token_urlsafe(32))
+    assert result.status_code==400 and control['calls']==[]
