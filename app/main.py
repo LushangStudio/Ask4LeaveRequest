@@ -632,25 +632,30 @@ def watermarked_signature(content,label):
     canvas=Image.new('RGBA',(1100,420),'white')
     canvas.alpha_composite(source,((1100-source.width)//2,(420-source.height)//2))
     mask=Image.new('L',canvas.size,0); draw=ImageDraw.Draw(mask)
-    font=ImageFont.truetype(font_path(),32)
+    font=ImageFont.truetype(font_path(),44)
     lines=[]; current=''
     for char in label:
         if draw.textlength(current+char,font=font)>1030:
             lines.append(current);current=''
         current+=char
     lines.append(current)
-    for y in range(35,390,max(85,len(lines)*38+12)):
+    line_height=52
+    block_height=len(lines)*line_height
+    for repeat in range(3):
+        y=repeat*140+max(0,(140-block_height)//2)
         for line_index,line in enumerate(lines):
             width=draw.textlength(line,font=font)
-            draw.text(((1100-width)/2,y+line_index*38),line,font=font,fill=255)
-    # Halftone text uses 3x3 black dots on a 4px grid, over a sparse black dot field.
+            draw.text(((1100-width)/2,y+line_index*line_height),line,font=font,fill=255)
+    # A 6px grid has 4/9 as many dots as the previous 4px grid.
+    # Larger 4x5 glyph dots retain ~56% black coverage (formerly 3x3/4x4).
+    # Two-pixel background dots retain ~6% coverage for clearer 300ppi printing.
     # All added pixels are opaque black; the pattern continues through the handwriting.
     # Global binary thresholding retains both handwriting and watermark dots.
     canvas=canvas.convert('RGB')
     target=canvas.load(); glyphs=mask.load()
     for y in range(canvas.height):
         for x in range(canvas.width):
-            if (x%4<3 and y%4<3 and glyphs[x,y]>=96) or (x%4==0 and y%4==0):
+            if (x%6<4 and y%6<5 and glyphs[x,y]>=96) or (x%6==0 and y%6<2):
                 target[x,y]=(0,0,0)
     output=io.BytesIO();canvas.save(output,format='PNG');return output.getvalue()
 
