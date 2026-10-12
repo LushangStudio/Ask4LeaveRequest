@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from pypdf import PdfReader
 from sqlalchemy import create_engine, select, func
 from sqlalchemy.orm import Session
+from PIL import Image, ImageDraw
 from app import main as m
 
 @pytest.fixture
@@ -14,15 +15,27 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(m,'engine',create_engine('sqlite:///'+str(tmp_path/'test.db'),connect_args={'check_same_thread':False}))
     with TestClient(m.app) as c: yield c
 
-def login(c,person='student-a'):
+def signature_payload():
+    image=Image.new('RGB',(600,180),'white'); draw=ImageDraw.Draw(image)
+    draw.line([(60,130),(150,35),(200,130),(310,45),(270,140),(450,60),(520,100)],fill='black',width=8)
+    output=io.BytesIO();image.save(output,format='PNG')
+    import base64
+    return {'image':base64.b64encode(output.getvalue()).decode()}
+
+def login(c,person='student-a',with_signature=True):
     assert c.post('/api/demo/login',json={'person_id':person}).status_code==200
+    if with_signature and c.get('/api/me').json()['role']=='counselor' and not c.get('/api/signature').json()['configured']:
+        assert c.post('/api/signature',json=signature_payload()).status_code==200
 
 def payload(layout='combined'):
     return {'reason':'参加校外学术交流，申请请假。','starts':'2026-10-01','ends':'2026-10-03','layout':layout,'idempotency_key':str(uuid.uuid4()),'items':[{'kind':'course','title':'组织行为学','day':'2026-10-01','time':'第 1–2 节'},{'kind':'activity','title':'志愿者活动','day':'2026-10-02','time':'14:00–16:00'}]}
 def submit(c,body=None):
     r=c.post('/api/requests',json=body or payload());assert r.status_code==201,r.text;return r.json()
 def approve(c,rid):
-    return c.post(f'/api/requests/{rid}/decision',json={'outcome':'approved','opinion':'同意'})
+    preview=c.post(f'/api/requests/{rid}/preview',json={'opinion':'同意'})
+    body={'outcome':'approved','opinion':'同意'}
+    if preview.status_code==200:body['preview_id']=preview.json()['id']
+    return c.post(f'/api/requests/{rid}/decision',json=body)
 
 @pytest.mark.parametrize('layout,count',[('combined',1),('separate',2)])
 def test_full_flow_pdf_and_persistence(client,layout,count):

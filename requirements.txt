@@ -4,3 +4,5 @@ SQLAlchemy==2.0.40
 pymysql==1.1.1
 cryptography>=44.0.3
 reportlab==4.4.0
+Pillow>=11.3,<13
+httpx==0.28.1

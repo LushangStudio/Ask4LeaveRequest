@@ -4,8 +4,16 @@
 
 | 表 | 保存内容 |
 | --- | --- |
-| people | 服务端的用户、角色、学生所属辅导员、个人资料 |
-| demo_sessions | 演示会话的 SHA-256 摘要、身份和到期时间，不保存原始令牌 |
+| people | 服务端用户、角色、学生班级资料；旧 counselor 列保留兼容 |
+| directory_members | 运维名单中的有效身份；移除后既有会话也失去访问权 |
+| request_counselors | 提交时班级全部辅导员审批范围快照，多对多 |
+| counselor_signatures | 辅导员本人裁切的 PNG、版本、摘要、更新时间 |
+| approval_signatures | 一次实际审批对应的带纯黑点阵水印签名快照 |
+| approval_previews | 15 分钟有效的申请/审批人/签名版本/意见绑定及水印图片 |
+| demo_sessions | 登录会话的 SHA-256 摘要、身份和到期时间，不保存原始令牌 |
+| test_login_sessions | 密钥入口会话标签和密钥摘要，关闭/轮换后可拒绝旧会话；删除会话时级联删除 |
+| uis_login_sessions | UIS 来源标签与 user_type，不按类型过滤，删除会话时级联删除 |
+| oauth_states | 有效期内一次性消费的 state 摘要，不保存原始 state |
 | leave_requests | 原因、起止日期、生成方式、学生信息快照、审批状态、文件状态、幂等标识 |
 | leave_items | 课程/活动/其他事项、名称、日期、时间、排序 |
 | approval_records | 一份申请对应一条最终审批，保存审批人姓名快照、结果、意见、时间 |

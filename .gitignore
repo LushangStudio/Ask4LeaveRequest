@@ -5,3 +5,8 @@ __pycache__/
 var/
 *.db
 *.egg-info/
+node_modules/
+dist/
+config/relationships.json
+tmp/
+output/
