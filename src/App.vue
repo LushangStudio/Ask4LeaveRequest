@@ -47,8 +47,10 @@ async function loadRecords() {
   try {
     const currentUser = await api("me");
     const roles = currentUser.roles || [currentUser.role];
-    if (!roles.includes(viewRole.value)) viewRole.value = roles[0];
-    const rows = await api(`requests?view=${viewRole.value}`);
+    if (!roles.includes(viewRole.value)) viewRole.value = roles[0] || "";
+    const rows = roles.length
+      ? await api(`requests?view=${viewRole.value}`)
+      : [];
     user.value = currentUser;
     identity.value = currentUser.id;
     records.value = rows;
@@ -167,6 +169,9 @@ onMounted(async () => {
         </div>
       </div>
       <div class="header-actions">
+        <a v-if="user?.is_admin" class="button outline" href="class-management/"
+          >班级管理</a
+        >
         <a class="button outline" :href="runtime.app_list_url"
           >← 返回应用列表</a
         >

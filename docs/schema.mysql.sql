@@ -1,4 +1,13 @@
--- New empty MySQL 8 database. Includes UIS, test sources and withdrawal audit.
+-- New empty MySQL 8 database. Persisted class directory and audit.
+
+CREATE TABLE class_directory (
+	id INTEGER NOT NULL AUTO_INCREMENT,
+	directory JSON NOT NULL,
+	digest VARCHAR(64) NOT NULL,
+	updated VARCHAR(40) NOT NULL,
+	PRIMARY KEY (id)
+);
+
 
 CREATE TABLE oauth_states (
 	state_hash VARCHAR(64) NOT NULL,
@@ -36,6 +45,19 @@ CREATE TABLE demo_sessions (
 	expires DATETIME NOT NULL,
 	PRIMARY KEY (token_hash),
 	FOREIGN KEY(person_id) REFERENCES people (id)
+);
+
+
+CREATE TABLE directory_audits (
+	id VARCHAR(36) NOT NULL,
+	actor_id VARCHAR(40) NOT NULL,
+	actor_name VARCHAR(80) NOT NULL,
+	before_digest VARCHAR(64) NOT NULL,
+	after_digest VARCHAR(64) NOT NULL,
+	counts JSON NOT NULL,
+	at VARCHAR(40) NOT NULL,
+	PRIMARY KEY (id),
+	FOREIGN KEY(actor_id) REFERENCES people (id)
 );
 
 

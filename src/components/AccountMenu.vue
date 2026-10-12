@@ -52,6 +52,7 @@ onBeforeUnmount(() => {
         ><small
           >{{
             user.user_type ||
+            (user.role === "admin" ? "管理员" : "") ||
             (user.role === "both"
               ? "学生兼辅导员"
               : user.role === "counselor"

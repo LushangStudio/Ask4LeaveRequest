@@ -17,6 +17,9 @@
 | leave_requests | 原因、起止日期、生成方式、学生信息快照、审批状态、文件状态、幂等标识 |
 | leave_items | 课程/活动/其他事项、名称、日期、时间、排序 |
 | approval_records | 一份申请对应一条最终审批，保存审批人姓名快照、结果、意见、时间 |
+| request_withdrawals | 学生撤回/辅导员撤回的操作者、原因、时间及原状态 |
+| class_directory | 当前班级/人员配置及版本摘要，数据库唯一名单来源 |
+| directory_audits | 管理员名单更新的操作者、前后文件摘要、人数及时间 |
 | generated_documents | PDF 二进制、申请关联、顺序、文件名与内容摘要 |
 
 业务状态：`pending → approved / rejected`。文件状态：`not_started → generating → ready / failed`，失败重试 `failed → generating`。文件失败不会回退业务状态。

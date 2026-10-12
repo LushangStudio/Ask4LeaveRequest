@@ -694,3 +694,33 @@ button.danger:hover:not(:disabled) {
   margin-top: 4px;
   padding: 6px 10px;
 }
+.admin-save {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 24px;
+}
+.admin-row {
+  max-width: 1000px;
+}
+.admin-tabs {
+  flex-wrap: wrap;
+}
+.import-table-wrap {
+  overflow-x: auto;
+  margin: 16px 0;
+}
+.import-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.import-table th,
+.import-table td {
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  text-align: left;
+}
+.import-table th {
+  background: #eff6ff;
+}

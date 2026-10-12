@@ -79,6 +79,9 @@ def read_directories(path: str, test_path: str | None = None) -> DirectoryConfig
     base=read_directory(path)
     if not test_path:return base
     test=read_directory(test_path)
+    return merge_directories(base,test)
+
+def merge_directories(base: DirectoryConfig,test: DirectoryConfig) -> DirectoryConfig:
     if any(not p.user_id.startswith('test-') for p in test.counselors+test.students) or any(not c.class_id.startswith('test-') for c in test.classes):
         raise ValueError('附加测试名单只接受 test- 身份与班级')
     return DirectoryConfig.model_validate({'version':1,

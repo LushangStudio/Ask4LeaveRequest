@@ -11,6 +11,7 @@ import base64
 import binascii
 import warnings
 import hmac
+import re
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
@@ -23,7 +24,7 @@ from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, Request a
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import (JSON, DateTime, ForeignKey, LargeBinary, String, Text, UniqueConstraint, func,
+from sqlalchemy import (JSON, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, func,
                         create_engine, select, update, event)
 from sqlalchemy.dialects.mysql import MEDIUMBLOB
 from sqlalchemy.exc import IntegrityError
@@ -37,7 +38,8 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.platypus import Image as PDFImage, KeepTogether
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
-from app.directory import read_directories
+from app.directory import read_directories, DirectoryConfig
+from app.student_import import preview_import
 from app.test_login import TestQueryRedaction, load_test_login
 from app.uis import UISSettings, UISOAuthClient, OAuthProviderError
 
@@ -122,6 +124,24 @@ class Withdrawal(Base):
     prior_status: Mapped[str] = mapped_column(String(16))
     reason: Mapped[str] = mapped_column(Text)
     at: Mapped[str] = mapped_column(String(40))
+class DirectoryAudit(Base):
+    __tablename__ = 'directory_audits'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    actor_id: Mapped[str] = mapped_column(ForeignKey('people.id'))
+    actor_name: Mapped[str] = mapped_column(String(80))
+    before_digest: Mapped[str] = mapped_column(String(64))
+    after_digest: Mapped[str] = mapped_column(String(64))
+    counts: Mapped[dict] = mapped_column(JSON)
+    at: Mapped[str] = mapped_column(String(40))
+class DirectoryState(Base):
+    __tablename__ = 'class_directory'
+    id: Mapped[int] = mapped_column(Integer,primary_key=True)
+    directory: Mapped[dict] = mapped_column(JSON)
+    digest: Mapped[str] = mapped_column(String(64))
+    updated: Mapped[str] = mapped_column(String(40))
+
+def directory_digest(directory):
+    return hashlib.sha256(json.dumps(directory,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
 class Document(Base):
     __tablename__ = 'generated_documents'
     __table_args__ = (UniqueConstraint('request_id', 'position'),)
@@ -169,7 +189,7 @@ class ApprovalPreview(Base):
     at: Mapped[str] = mapped_column(String(40))
     expires: Mapped[datetime] = mapped_column(DateTime, index=True)
 
-def sync_directory(db, roster):
+def sync_directory(db, roster, commit=True):
     classes = {c.class_id:c for c in roster.classes}
     student_ids={s.user_id for s in roster.students}
     counselor_ids={c.user_id for c in roster.counselors}
@@ -179,9 +199,14 @@ def sync_directory(db, roster):
                  'class_id':s.class_id,'class_name':classes[s.class_id].name,
                  'counselor_ids':classes[s.class_id].counselor_ids}) for s in roster.students]
     active = {p[0] for p in people}
+    admins=app.state.admin_ids
+    active |= admins
+    for pid in admins-student_ids-counselor_ids:
+        existing=db.get(Person,pid)
+        people.append((pid,existing.name if existing else pid,'admin',None,{}))
     for pid, name, role, counselor, profile in people:
         person = db.get(Person, pid)
-        if person and person.role != role and 'both' not in {person.role,role}:
+        if person and person.role != role and not {'both','admin'} & {person.role,role}:
             raise RuntimeError('Cannot change an existing directory identity role')
         if person:
             person.name, person.role, person.counselor, person.profile = name, role, counselor, profile
@@ -192,7 +217,7 @@ def sync_directory(db, roster):
     for member in db.scalars(select(DirectoryMember)):
         if member.person_id not in active: db.delete(member)
     # Historical people and request/approval snapshots remain intact; removed identities lose access.
-    db.commit()
+    if commit:db.commit()
 
 @asynccontextmanager
 async def lifespan(app):
@@ -202,19 +227,12 @@ async def lifespan(app):
     uis=UISSettings.from_env()
     if mode=='production':
         if not uis.configured:raise RuntimeError('UIS/ehall authentication is not configured')
-        if not os.getenv('RELATIONSHIPS_PATH'):raise RuntimeError('Production requires an explicit operator relationship file')
         if any(urlsplit(url).scheme!='https' or not urlsplit(url).hostname for url in [uis.authorization_url,uis.token_url,uis.user_info_url,uis.logout_url,uis.redirect_uri,uis.frontend_url]):
             raise RuntimeError('Production UIS endpoints and frontend must use HTTPS')
     test_config=load_test_login(os.getenv('TEST_LOGIN_CONFIG_PATH'))
-    default_roster=ROOT/'config'/('relationships.test.json' if mode=='test' else 'relationships.example.json')
-    config_path = os.getenv('RELATIONSHIPS_PATH', str(default_roster))
-    try:
-        roster = read_directories(config_path,os.getenv('TEST_RELATIONSHIPS_PATH'))
-    except Exception:
-        raise RuntimeError('Invalid operator relationship configuration; run python -m app.directory PATH') from None
-    if mode=='test' and (any(not p.user_id.startswith('test-') for p in roster.counselors+roster.students)
-                         or any(not c.class_id.startswith('test-') for c in roster.classes)):
-        raise RuntimeError('Test mode accepts only test- identities and test- classes')
+    admins={s.strip() for s in os.getenv('ADMIN_USER_IDS','').split(',') if s.strip()}
+    if any(not re.fullmatch(r'[A-Za-z0-9_-]{1,40}',s) for s in admins):raise RuntimeError('Invalid ADMIN_USER_IDS configuration')
+    app.state.admin_ids=admins
     cookie_path=os.getenv('SESSION_COOKIE_PATH','/')
     if not cookie_path.startswith('/') or not cookie_path.endswith('/') or cookie_path.startswith('//') or any(c in cookie_path for c in '?\\#\r\n'):
         raise RuntimeError('Invalid session cookie / application base path')
@@ -222,6 +240,19 @@ async def lifespan(app):
     app.state.uis_settings=uis
     Base.metadata.create_all(engine)
     with Session(engine) as db:
+        state=db.get(DirectoryState,1)
+        if state is None:
+            # JSON fixtures only bootstrap a new local demo/test database. Production never reads roster files.
+            if mode=='production':roster=DirectoryConfig(version=1,counselors=[],classes=[],students=[])
+            else:
+                default_roster=ROOT/'config'/('relationships.test.json' if mode=='test' else 'relationships.example.json')
+                try:roster=read_directories(os.getenv('RELATIONSHIPS_PATH',str(default_roster)),os.getenv('TEST_RELATIONSHIPS_PATH'))
+                except Exception:raise RuntimeError('Invalid local fixture directory configuration') from None
+            data=roster.model_dump()
+            state=DirectoryState(id=1,directory=data,digest=directory_digest(data),updated=datetime.now(timezone.utc).isoformat());db.add(state)
+        else:roster=DirectoryConfig.model_validate(state.directory)
+        if mode=='test' and (any(not p.user_id.startswith('test-') for p in roster.counselors+roster.students) or any(not c.class_id.startswith('test-') for c in roster.classes)):
+            raise RuntimeError('Test mode accepts only test- identities and test- classes')
         sync_directory(db, roster)
         # Additive migration for legacy requests; do not rewrite historical approvals.
         for row in db.scalars(select(Request).where(~select(RequestCounselor).where(RequestCounselor.request_id==Request.id).exists())):
@@ -279,6 +310,9 @@ def authorized(db, rid, user):
     return row
 def has_role(user,role):return user.role in {role,'both'}
 def user_roles(user):return [r for r in ['student','counselor'] if has_role(user,r)]
+def is_admin(user):return user.id in app.state.admin_ids
+def require_admin(user):
+    if not is_admin(user):raise HTTPException(403,'仅管理员可管理班级')
 class LoginInput(BaseModel):
     person_id: str
 @app.post('/api/demo/login')
@@ -297,7 +331,7 @@ def logout(response:Response, leave_session:str|None=Cookie(default=None),db:Ses
 def me(user:Person=Depends(current_user),leave_session:str|None=Cookie(default=None),db:Session=Depends(db_session)):
     digest=hashlib.sha256((leave_session or '').encode()).hexdigest()
     uis=db.get(UISLoginSession,digest)
-    return {'id':user.id,'name':user.name,'role':user.role,'roles':user_roles(user),'profile':user.profile,
+    return {'id':user.id,'name':user.name,'role':user.role,'roles':user_roles(user),'is_admin':is_admin(user),'profile':user.profile,
             'auth_provider':'uis' if uis else 'test' if db.get(TestLoginSession,digest) else 'demo',
             'user_type':uis.user_type if uis else None}
 @app.get('/api/health')
@@ -356,6 +390,7 @@ async def uis_callback(code:str,state:str|None=None,leave_oauth_state:str|None=C
     # No undergraduate/type allowlist: the operator roster alone determines application roles.
     person=db.get(Person,user.user_id)
     if not person or not db.get(DirectoryMember,user.user_id):raise HTTPException(403,'尚未配置班级或辅导员关系，请联系管理员')
+    if person.role=='admin':person.name=user.user_name[:80];db.commit()
     response=RedirectResponse(settings.frontend_url,status_code=303)
     establish_login(db,user.user_id,response,leave_session,uis_type=user.user_type)
     response.delete_cookie('leave_oauth_state',path=uis_state_cookie_path(),secure=cookie_secure(),httponly=True,samesite='lax')
@@ -491,6 +526,7 @@ def submit(body:ApplicationInput, db:Session=Depends(db_session),user:Person=Dep
     return serialize(db,row)
 @app.get('/api/requests')
 def listing(view:Literal['student','counselor']|None=None,db:Session=Depends(db_session),user:Person=Depends(current_user)):
+    if not user_roles(user) and view is None:return []
     role=view or ('student' if has_role(user,'student') else 'counselor')
     if not has_role(user,role):raise HTTPException(403,'无此工作台身份')
     scope = Request.student_id==user.id if role=='student' else select(RequestCounselor).where(RequestCounselor.request_id==Request.id,RequestCounselor.counselor_id==user.id).exists()
@@ -499,6 +535,58 @@ def listing(view:Literal['student','counselor']|None=None,db:Session=Depends(db_
 @app.get('/api/requests/{rid}')
 def detail(rid:str,db:Session=Depends(db_session),user:Person=Depends(current_user)):
     return serialize(db,authorized(db,rid,user))
+
+@app.get('/api/admin/directory')
+def admin_directory(db:Session=Depends(db_session),user:Person=Depends(current_user)):
+    require_admin(user)
+    state=db.get(DirectoryState,1)
+    if not state:raise HTTPException(503,'班级数据库尚未初始化')
+    return {'directory':state.directory,'revision':state.digest}
+
+class DirectoryUpdate(BaseModel):
+    directory:DirectoryConfig
+    revision:str=Field(pattern=r'^[a-f0-9]{64}$')
+
+@app.post('/api/admin/directory')
+def save_admin_directory(body:DirectoryUpdate,db:Session=Depends(db_session),user:Person=Depends(current_user)):
+    require_admin(user)
+    data=body.directory.model_dump();digest=directory_digest(data)
+    try:
+        changed=db.execute(update(DirectoryState).where(DirectoryState.id==1,DirectoryState.digest==body.revision).values(directory=data,digest=digest,updated=datetime.now(timezone.utc).isoformat())).rowcount
+        if not changed:db.rollback();raise HTTPException(409,'名单已被其他管理员修改，请刷新后重新编辑')
+        try:sync_directory(db,body.directory,commit=False)
+        except RuntimeError:
+            db.rollback();raise HTTPException(409,'已有单一身份不能直接互换；可先配置学生兼辅导员身份') from None
+        db.add(DirectoryAudit(id=str(uuid.uuid4()),actor_id=user.id,actor_name=user.name,before_digest=body.revision,after_digest=digest,
+                              counts={'classes':len(data['classes']),'counselors':len(data['counselors']),'students':len(data['students'])},at=datetime.now(timezone.utc).isoformat()))
+        db.commit()
+        return {'directory':data,'revision':digest}
+    except HTTPException:raise
+    except Exception:
+        db.rollback();logging.getLogger(__name__).exception('Admin directory save failed')
+        raise HTTPException(503,'名单保存失败，已回滚，请稍后重试') from None
+
+class StudentImportInput(BaseModel):
+    text:str=Field(min_length=1,max_length=2_000_000)
+    revision:str=Field(pattern=r'^[a-f0-9]{64}$')
+
+def prepare_student_import(body,db,user):
+    require_admin(user)
+    state=db.get(DirectoryState,1)
+    if not state or state.digest!=body.revision:raise HTTPException(409,'名单已变化，请刷新后重新导入')
+    return preview_import(body.text,DirectoryConfig.model_validate(state.directory))
+
+@app.post('/api/admin/students/import/preview')
+def student_import_preview(body:StudentImportInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):
+    result,_=prepare_student_import(body,db,user)
+    return result
+
+@app.post('/api/admin/students/import')
+def import_students(body:StudentImportInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):
+    result,directory=prepare_student_import(body,db,user)
+    if result['errors']:raise HTTPException(422,'批量导入有错误，请先修正全部错误行')
+    saved=save_admin_directory(DirectoryUpdate(directory=directory,revision=body.revision),db,user)
+    return {**saved,'created':result['created'],'updated':result['updated']}
 
 font_lock=threading.Lock()
 def font_path():
@@ -787,6 +875,12 @@ app.add_middleware(TestQueryRedaction)
 # Relative Vite asset URLs work both directly and behind the /leave/ proxy.
 FRONTEND_DIST = ROOT/'dist'
 app.mount('/assets', StaticFiles(directory=FRONTEND_DIST/'assets', check_dir=False), name='assets')
+@app.get('/class-management/')
+def management_page():
+    if not (FRONTEND_DIST/'index.html').is_file():raise HTTPException(503,'前端尚未构建')
+    # Shared bundled shell; protected APIs supply no roster data before admin authorization.
+    html=(FRONTEND_DIST/'index.html').read_text().replace('<head>','<head><base href="../">',1)
+    return Response(html,media_type='text/html')
 @app.get('/')
 def index(request:HTTPRequest,leave_session:str|None=Cookie(default=None),db:Session=Depends(db_session)):
     attempt=getattr(request.state,'test_login_query',None)

@@ -97,7 +97,8 @@ def test_gate_disabled_by_default_and_does_not_expose_secret(test_client,monkeyp
 
 
 def test_test_mode_refuses_non_test_roster(test_client,monkeypatch):
-    monkeypatch.setenv('RELATIONSHIPS_PATH',str(m.ROOT/'config/relationships.example.json'))
+    with Session(m.engine) as db:
+        state=db.get(m.DirectoryState,1);state.directory=json.loads((m.ROOT/'config/relationships.example.json').read_text());db.commit()
     with pytest.raises(RuntimeError,match='only test-'):
         with TestClient(m.app):pass
 

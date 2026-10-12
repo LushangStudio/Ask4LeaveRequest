@@ -1,5 +1,8 @@
 // Relative to the page so both / and the Home proxy's /leave/ work.
-const apiBase = new URL("api/", window.location.href);
+const apiBase = new URL(
+  window.location.pathname.endsWith("/class-management/") ? "../api/" : "api/",
+  window.location.href,
+);
 
 export function apiUrl(path) {
   return new URL(path, apiBase).href;

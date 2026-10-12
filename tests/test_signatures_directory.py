@@ -196,11 +196,11 @@ def test_operator_removal_revokes_existing_session_and_preserves_history(client)
         assert db.get(m.Person,'student-a') and db.get(m.Request,rid).snapshot['name']=='演示学生甲'
 
 
-def test_invalid_operator_file_fails_startup_before_db_changes(client,tmp_path,monkeypatch):
+def test_retired_invalid_json_cannot_reset_database_directory(client,tmp_path,monkeypatch):
     source=tmp_path/'invalid.json';source.write_text('{"version":1}')
     monkeypatch.setenv('RELATIONSHIPS_PATH',str(source))
-    with pytest.raises(RuntimeError,match='operator relationship'):
-        with TestClient(m.app):pass
+    with TestClient(m.app) as restarted:
+        assert restarted.get('/api/demo/identities').status_code==200
     login(client);assert client.get('/api/me').json()['profile']['class_id']=='class-a'
 
 

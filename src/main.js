@@ -1,5 +1,8 @@
-import { createApp } from "vue";
+import { createApp, defineAsyncComponent } from "vue";
 import App from "./App.vue";
 import "./style.css";
 
-createApp(App).mount("#app");
+const page = window.location.pathname.endsWith("/class-management/")
+  ? defineAsyncComponent(() => import("./ClassManagement.vue"))
+  : App;
+createApp(page).mount("#app");

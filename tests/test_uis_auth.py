@@ -32,6 +32,9 @@ def production(tmp_path,monkeypatch):
     monkeypatch.setenv('PUBLIC_ORIGIN','https://app.example')
     monkeypatch.setenv('SESSION_COOKIE_PATH','/')
     monkeypatch.setattr(m,'engine',create_engine('sqlite:///'+str(tmp_path/'auth.db'),connect_args={'check_same_thread':False}))
+    m.Base.metadata.create_all(m.engine)
+    with Session(m.engine) as db:
+        db.add(m.DirectoryState(id=1,directory=roster,digest=m.directory_digest(roster),updated=datetime.now(timezone.utc).isoformat()));db.commit()
     response_user={'user_id':'01234567890','user_name':'学生甲','user_type':'本专科生','sessionId':'uis-session'}
     control={'user':response_user,'token':{'access_token':'access-token','token_type':'Bearer'},'calls':[]}
     def handler(request):
@@ -146,7 +149,11 @@ def test_uis_and_test_gate_can_coexist_without_revoking_real_session(production,
     key=secrets.token_urlsafe(32)
     config=tmp_path/'gate.json';config.write_text(json.dumps({'enabled':True,'secret':key}))
     monkeypatch.setenv('TEST_LOGIN_CONFIG_PATH',str(config))
-    monkeypatch.setenv('TEST_RELATIONSHIPS_PATH',str(m.ROOT/'config/relationships.test.json'))
+    with Session(m.engine) as db:
+        state=db.get(m.DirectoryState,1);data=dict(state.directory)
+        test=json.loads((m.ROOT/'config/relationships.test.json').read_text())
+        for field in ['students','counselors','classes']:data[field]=data[field]+test[field]
+        state.directory=data;state.digest=m.directory_digest(data);db.commit()
     with TestClient(m.app,base_url='https://app.example',follow_redirects=False) as real:
         assert finish(real,begin(real)).status_code==303
         test=TestClient(m.app,base_url='https://app.example',follow_redirects=False)
