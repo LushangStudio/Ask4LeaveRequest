@@ -731,7 +731,7 @@ def generate(rid):
             for pos,group in enumerate(groups):
                 signature=db.get(ApprovalSignature,rid)
                 data=render_pdf(row,decision,group,signature.content if signature else None)
-                generated.append(Document(id=str(uuid.uuid4()),request_id=rid,position=pos,name=f'leave-{pos+1}.pdf',content=data,digest=hashlib.sha256(data).hexdigest()))
+                generated.append(Document(id=str(uuid.uuid4()),request_id=rid,position=pos,name=f'{uuid.uuid4().hex}.pdf',content=data,digest=hashlib.sha256(data).hexdigest()))
             # Revocation can win while rendering; publish only if approval is still current.
             published=db.execute(update(Request).where(Request.id==rid,Request.status=='approved',Request.file_status=='generating').values(file_status='ready')).rowcount
             if not published:db.rollback();return
@@ -806,6 +806,9 @@ def withdraw(rid:str,body:WithdrawalInput,db:Session=Depends(db_session),user:Pe
 class PreviewInput(BaseModel):
     opinion:str=Field(default='',max_length=2000)
 
+def preview_filename(pid,position):
+    return hashlib.sha256(f'{pid}:{position}'.encode()).hexdigest()[:32]+'.pdf'
+
 @app.post('/api/requests/{rid}/preview')
 def create_preview(rid:str,body:PreviewInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):
     require_counselor(user);authorized(db,rid,user)
@@ -825,7 +828,7 @@ def create_preview(rid:str,body:PreviewInput,db:Session=Depends(db_session),user
     db.query(ApprovalPreview).filter(ApprovalPreview.expires < now.replace(tzinfo=None)).delete()
     db.add(preview);db.commit()
     count=1 if row.layout=='combined' else db.scalar(select(func.count()).select_from(Item).where(Item.request_id==rid))
-    return {'id':preview.id,'count':count,'watermark':watermark,'expires_at':preview.expires.replace(tzinfo=timezone.utc).isoformat()}
+    return {'id':preview.id,'count':count,'filenames':[preview_filename(preview.id,i) for i in range(count)],'watermark':watermark,'expires_at':preview.expires.replace(tzinfo=timezone.utc).isoformat()}
 
 @app.get('/api/previews/{pid}/{position}')
 def preview_pdf(pid:str,position:int,db:Session=Depends(db_session),user:Person=Depends(current_user)):
@@ -841,7 +844,7 @@ def preview_pdf(pid:str,position:int,db:Session=Depends(db_session),user:Person=
     if position<0 or position>=len(groups):raise HTTPException(404,'预览页不存在')
     decision=Decision(approver_name=user.name,opinion=preview.opinion,at=preview.at)
     data=render_pdf(row,decision,groups[position],preview.signature_content,draft=True)
-    return Response(data,media_type='application/pdf',headers={'Content-Disposition':f'inline; filename="leave-preview-{position+1}.pdf"'})
+    return Response(data,media_type='application/pdf',headers={'Content-Disposition':f'inline; filename="{preview_filename(pid,position)}"'})
 @app.post('/api/requests/{rid}/retry')
 def retry(rid:str,db:Session=Depends(db_session),user:Person=Depends(current_user)):
     row=authorized(db,rid,user)

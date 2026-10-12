@@ -310,9 +310,7 @@ const kinds = { course: "课程", activity: "活动", other: "其他" };
         <a
           class="file"
           :href="previewUrls[selected]"
-          :download="
-            viewingDocument?.name || `leave-preview-${selected + 1}.pdf`
-          "
+          :download="viewingDocument?.name || preview?.filenames?.[selected]"
           >下载 PDF</a
         >
         <p v-if="preview?.watermark" class="caption">
