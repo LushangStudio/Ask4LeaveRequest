@@ -113,6 +113,15 @@ class Decision(Base):
     outcome: Mapped[str] = mapped_column(String(16))
     opinion: Mapped[str] = mapped_column(Text)
     at: Mapped[str] = mapped_column(String(40))
+class Withdrawal(Base):
+    __tablename__ = 'request_withdrawals'
+    request_id: Mapped[str] = mapped_column(ForeignKey('leave_requests.id'), primary_key=True)
+    actor_id: Mapped[str] = mapped_column(ForeignKey('people.id'))
+    actor_name: Mapped[str] = mapped_column(String(80))
+    actor_role: Mapped[str] = mapped_column(String(20))
+    prior_status: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str] = mapped_column(Text)
+    at: Mapped[str] = mapped_column(String(40))
 class Document(Base):
     __tablename__ = 'generated_documents'
     __table_args__ = (UniqueConstraint('request_id', 'position'),)
@@ -445,10 +454,12 @@ class ApplicationInput(BaseModel):
 
 def serialize(db,row):
     approval=db.get(Decision,row.id)
+    withdrawal=db.get(Withdrawal,row.id)
     return {'id':row.id,'student':row.snapshot,'reason':row.reason,'starts':row.starts,'ends':row.ends,'layout':row.layout,'status':row.status,'file_status':row.file_status,'generation_error':row.generation_error,'created':row.created,
       'items':[{'kind':i.kind,'title':i.title,'day':i.day,'time':i.time} for i in db.scalars(select(Item).where(Item.request_id==row.id).order_by(Item.position))],
       'approval':{'approver':approval.approver_name,'outcome':approval.outcome,'opinion':approval.opinion,'at':approval.at} if approval else None,
-      'documents':[{'id':d.id,'name':d.name,'sha256':d.digest} for d in db.scalars(select(Document).where(Document.request_id==row.id).order_by(Document.position))]}
+      'withdrawal':{'actor':withdrawal.actor_name,'role':withdrawal.actor_role,'reason':withdrawal.reason,'at':withdrawal.at} if withdrawal else None,
+      'documents':[{'id':d.id,'name':d.name,'sha256':d.digest} for d in db.scalars(select(Document).where(Document.request_id==row.id).order_by(Document.position))] if row.status=='approved' else []}
 @app.post('/api/requests',status_code=201)
 def submit(body:ApplicationInput, db:Session=Depends(db_session),user:Person=Depends(current_user)):
     if user.role!='student': raise HTTPException(403,'仅学生可提交申请')
@@ -619,14 +630,18 @@ def generate(rid):
             row=db.get(Request,rid); decision=db.get(Decision,rid)
             items=list(db.scalars(select(Item).where(Item.request_id==rid).order_by(Item.position)))
             groups=[items] if row.layout=='combined' else [[i] for i in items]
+            generated=[]
             for pos,group in enumerate(groups):
                 signature=db.get(ApprovalSignature,rid)
                 data=render_pdf(row,decision,group,signature.content if signature else None)
-                db.add(Document(id=str(uuid.uuid4()),request_id=rid,position=pos,name=f'leave-{pos+1}.pdf',content=data,digest=hashlib.sha256(data).hexdigest()))
-            row.file_status='ready'; db.commit()
+                generated.append(Document(id=str(uuid.uuid4()),request_id=rid,position=pos,name=f'leave-{pos+1}.pdf',content=data,digest=hashlib.sha256(data).hexdigest()))
+            # Revocation can win while rendering; publish only if approval is still current.
+            published=db.execute(update(Request).where(Request.id==rid,Request.status=='approved',Request.file_status=='generating').values(file_status='ready')).rowcount
+            if not published:db.rollback();return
+            db.add_all(generated);db.commit()
         except Exception:
             db.rollback()
-            db.execute(update(Request).where(Request.id==rid).values(file_status='failed',generation_error='审批已通过，文件生成失败。请检查中文字体与服务日志后重试。'))
+            db.execute(update(Request).where(Request.id==rid,Request.status=='approved',Request.file_status=='generating').values(file_status='failed',generation_error='审批已通过，文件生成失败。请检查中文字体与服务日志后重试。'))
             db.commit()
             logging.getLogger(__name__).exception('PDF generation failed for request %s',rid)
 class DecisionInput(BaseModel):
@@ -644,8 +659,8 @@ def decide(rid:str,body:DecisionInput,db:Session=Depends(db_session),user:Person
     if user.role!='counselor': raise HTTPException(403,'仅负责该学生的辅导员可审批')
     if row.status!='pending':
         old=db.get(Decision,rid)
-        if old.approver_id==user.id and old.outcome==body.outcome and old.opinion==body.opinion: return serialize(db,row)
-        raise HTTPException(409,'该申请已经审批，不能更改')
+        if row.status in {'approved','rejected'} and old and old.approver_id==user.id and old.outcome==body.outcome and old.opinion==body.opinion: return serialize(db,row)
+        raise HTTPException(409,'该申请已处理或撤回，不能审批')
     preview=None
     if body.outcome=='approved':
         signature=db.scalar(select(Signature).where(Signature.counselor_id==user.id).with_for_update())
@@ -667,12 +682,33 @@ def decide(rid:str,body:DecisionInput,db:Session=Depends(db_session),user:Person
     db.expire_all()
     return serialize(db,db.get(Request,rid))
 
+class WithdrawalInput(BaseModel):
+    reason:str=Field(default='',max_length=2000)
+
+@app.post('/api/requests/{rid}/withdraw')
+def withdraw(rid:str,body:WithdrawalInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):
+    row=authorized(db,rid,user)
+    prior='pending' if user.role=='student' else 'approved'
+    target='withdrawn' if user.role=='student' else 'revoked'
+    reason=body.reason.strip()
+    if row.status!=prior:
+        old=db.get(Withdrawal,rid)
+        if row.status==target and old and old.actor_id==user.id and old.reason==reason:return serialize(db,row)
+        raise HTTPException(409,'学生只能撤回待审批申请，辅导员只能撤回已通过请假条')
+    changed=db.execute(update(Request).where(Request.id==rid,Request.status==prior).values(status=target,file_status='cancelled',generation_error=None)).rowcount
+    if not changed:db.rollback();raise HTTPException(409,'申请状态已变化，请刷新')
+    db.add(Withdrawal(request_id=rid,actor_id=user.id,actor_name=user.name,actor_role=user.role,
+                      prior_status=prior,reason=reason,at=datetime.now(timezone.utc).isoformat()))
+    db.commit();db.expire_all()
+    return serialize(db,db.get(Request,rid))
+
 class PreviewInput(BaseModel):
     opinion:str=Field(default='',max_length=2000)
 
 @app.post('/api/requests/{rid}/preview')
 def create_preview(rid:str,body:PreviewInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):
-    require_counselor(user);row=authorized(db,rid,user)
+    require_counselor(user);authorized(db,rid,user)
+    row=db.scalar(select(Request).where(Request.id==rid).with_for_update().execution_options(populate_existing=True))
     if row.status!='pending': raise HTTPException(409,'该申请已经审批')
     signature=db.get(Signature,user.id)
     if not signature: raise HTTPException(409,'请先上传并保存个人签名，再预览请假条')
@@ -715,6 +751,7 @@ def download(did:str,db:Session=Depends(db_session),user:Person=Depends(current_
     doc=db.get(Document,did)
     if not doc: raise HTTPException(404,'文件不存在')
     row=authorized(db,doc.request_id,user)
+    if row.status in {'withdrawn','revoked'}:raise HTTPException(410,'请假条已撤回，文件已失效')
     if row.status!='approved' or row.file_status!='ready': raise HTTPException(409,'文件尚未就绪')
     return Response(doc.content,media_type='application/pdf',headers={'Content-Disposition':f'inline; filename="{doc.name}"','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
 @app.middleware('http')

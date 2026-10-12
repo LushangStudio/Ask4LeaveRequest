@@ -28,3 +28,9 @@ MySQL URL 格式为 `mysql+pymysql://ask4leave:<URL编码后的密码>@127.0.0.1
 `schema.mysql.sql` 由当前 SQLAlchemy 模型生成，是新建空库的参考结构。仅结构编译通过不等于 MySQL 实例集成测试通过；目前自动化闭环使用 SQLite。MySQL 切换须另行运行同一验收流程，尤其检查 utf8mb4、PDF 大小、事务回滚和用户权限。
 
 时间戳采用带 UTC 标识的 ISO 8601 字符串，界面转换为浏览器当地时间；事项日期为学校本地业务日期。数据库账号只访问自己的库，不与 WordTxT 共用密码。正式上线前确认数据保留期限、删除流程及备份恢复要求。
+
+## 申请撤回与请假条撤回
+
+学生仅可将本人 pending 申请变为 withdrawn；负责该申请的辅导员可将 approved 变为 revoked。双方仍可查看记录，状态不可恢复或重新审批。request_withdrawals 保存操作者、角色、时间、原状态与原因，原审批、签名和 PDF 留作历史数据；撤回后 API 不再提供 PDF，旧文件 URL 返回 410，生成重试和审批预览拒绝。系统不能收回此前已下载的文件。并发生成以条件更新发布，撤回获胜后不发布新 PDF。
+
+已有 MySQL 库先备份，再由迁移账号执行 docs/migrations/005-request-withdrawals.mysql.sql，然后部署并重启服务。运行账号仍仅需 DML；空库使用最新 schema.mysql.sql。

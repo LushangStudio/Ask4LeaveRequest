@@ -109,6 +109,13 @@ function retry(id) {
     await loadRecords();
   });
 }
+function withdraw({ id, reason }) {
+  return run(async () => {
+    await api(`requests/${id}/withdraw`, { reason });
+    await loadRecords();
+    message.value = "已撤回，历史记录保留。";
+  });
+}
 function logout() {
   return run(async () => {
     await api("logout", {});
@@ -269,6 +276,7 @@ onMounted(async () => {
             :signature-version="signatureVersion"
             @decision="decide"
             @retry="retry"
+            @withdraw="withdraw"
           />
         </div>
       </section>

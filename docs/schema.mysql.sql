@@ -1,4 +1,4 @@
--- New empty MySQL 8 database, UIS and test-source sessions.
+-- New empty MySQL 8 database. Includes UIS, test sources and withdrawal audit.
 
 CREATE TABLE oauth_states (
 	state_hash VARCHAR(64) NOT NULL,
@@ -8,6 +8,7 @@ CREATE TABLE oauth_states (
 
 CREATE INDEX ix_oauth_states_expires ON oauth_states (expires);
 
+
 CREATE TABLE people (
 	id VARCHAR(40) NOT NULL,
 	name VARCHAR(80) NOT NULL,
@@ -16,6 +17,7 @@ CREATE TABLE people (
 	profile JSON NOT NULL,
 	PRIMARY KEY (id)
 );
+
 
 CREATE TABLE counselor_signatures (
 	counselor_id VARCHAR(40) NOT NULL,
@@ -27,6 +29,7 @@ CREATE TABLE counselor_signatures (
 	FOREIGN KEY(counselor_id) REFERENCES people (id)
 );
 
+
 CREATE TABLE demo_sessions (
 	token_hash VARCHAR(64) NOT NULL,
 	person_id VARCHAR(40) NOT NULL,
@@ -35,11 +38,13 @@ CREATE TABLE demo_sessions (
 	FOREIGN KEY(person_id) REFERENCES people (id)
 );
 
+
 CREATE TABLE directory_members (
 	person_id VARCHAR(40) NOT NULL,
 	PRIMARY KEY (person_id),
 	FOREIGN KEY(person_id) REFERENCES people (id)
 );
+
 
 CREATE TABLE leave_requests (
 	id VARCHAR(36) NOT NULL,
@@ -62,6 +67,7 @@ CREATE TABLE leave_requests (
 	FOREIGN KEY(counselor_id) REFERENCES people (id)
 );
 
+
 CREATE TABLE approval_previews (
 	id VARCHAR(36) NOT NULL,
 	request_id VARCHAR(36) NOT NULL,
@@ -81,6 +87,7 @@ CREATE INDEX ix_approval_previews_expires ON approval_previews (expires);
 
 CREATE INDEX ix_approval_previews_request_id ON approval_previews (request_id);
 
+
 CREATE TABLE approval_records (
 	request_id VARCHAR(36) NOT NULL,
 	approver_id VARCHAR(40) NOT NULL,
@@ -92,6 +99,7 @@ CREATE TABLE approval_records (
 	FOREIGN KEY(request_id) REFERENCES leave_requests (id),
 	FOREIGN KEY(approver_id) REFERENCES people (id)
 );
+
 
 CREATE TABLE generated_documents (
 	id VARCHAR(36) NOT NULL,
@@ -107,6 +115,7 @@ CREATE TABLE generated_documents (
 
 CREATE INDEX ix_generated_documents_request_id ON generated_documents (request_id);
 
+
 CREATE TABLE leave_items (
 	id VARCHAR(36) NOT NULL,
 	request_id VARCHAR(36) NOT NULL,
@@ -121,6 +130,7 @@ CREATE TABLE leave_items (
 
 CREATE INDEX ix_leave_items_request_id ON leave_items (request_id);
 
+
 CREATE TABLE request_counselors (
 	request_id VARCHAR(36) NOT NULL,
 	counselor_id VARCHAR(40) NOT NULL,
@@ -131,6 +141,21 @@ CREATE TABLE request_counselors (
 
 CREATE INDEX ix_request_counselors_counselor_id ON request_counselors (counselor_id);
 
+
+CREATE TABLE request_withdrawals (
+	request_id VARCHAR(36) NOT NULL,
+	actor_id VARCHAR(40) NOT NULL,
+	actor_name VARCHAR(80) NOT NULL,
+	actor_role VARCHAR(20) NOT NULL,
+	prior_status VARCHAR(16) NOT NULL,
+	reason TEXT NOT NULL,
+	at VARCHAR(40) NOT NULL,
+	PRIMARY KEY (request_id),
+	FOREIGN KEY(request_id) REFERENCES leave_requests (id),
+	FOREIGN KEY(actor_id) REFERENCES people (id)
+);
+
+
 CREATE TABLE test_login_sessions (
 	token_hash VARCHAR(64) NOT NULL,
 	secret_digest VARCHAR(64) NOT NULL,
@@ -138,12 +163,14 @@ CREATE TABLE test_login_sessions (
 	FOREIGN KEY(token_hash) REFERENCES demo_sessions (token_hash) ON DELETE CASCADE
 );
 
+
 CREATE TABLE uis_login_sessions (
 	token_hash VARCHAR(64) NOT NULL,
 	user_type VARCHAR(80) NOT NULL,
 	PRIMARY KEY (token_hash),
 	FOREIGN KEY(token_hash) REFERENCES demo_sessions (token_hash) ON DELETE CASCADE
 );
+
 
 CREATE TABLE approval_signatures (
 	request_id VARCHAR(36) NOT NULL,

@@ -286,6 +286,11 @@ legend {
   background: #fbe8e9;
   color: #b84d58;
 }
+.withdrawn,
+.revoked {
+  background: #f1f5f9;
+  color: #64748b;
+}
 .file {
   display: inline-block;
   background: #eef3fb;

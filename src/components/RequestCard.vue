@@ -15,7 +15,7 @@ const props = defineProps({
   busy: Boolean,
   signatureVersion: String,
 });
-const emit = defineEmits(["decision", "retry"]);
+const emit = defineEmits(["decision", "retry", "withdraw"]);
 const opinion = ref("");
 const dialog = ref(null);
 const preview = ref(null);
@@ -26,6 +26,8 @@ const selected = ref(0);
 const seen = ref(new Set());
 const confirmed = ref(false);
 const viewingDocument = ref(null);
+const withdrawalDialog = ref(null);
+const withdrawalReason = ref("");
 let previewGeneration = 0;
 const canApprove = computed(
   () =>
@@ -50,6 +52,14 @@ watch([opinion, () => props.signatureVersion], () => {
   dialog.value?.close();
 });
 onBeforeUnmount(clearPreview);
+watch(
+  () => props.request.status,
+  () => {
+    clearPreview();
+    dialog.value?.close();
+    withdrawalDialog.value?.close();
+  },
+);
 async function openPreview() {
   if (previewBusy.value) return;
   clearPreview();
@@ -118,12 +128,19 @@ function approve() {
   });
   dialog.value.close();
 }
-const statuses = { pending: "待审批", approved: "已通过", rejected: "已驳回" };
+const statuses = {
+  pending: "待审批",
+  approved: "已通过",
+  rejected: "已驳回",
+  withdrawn: "学生已撤回",
+  revoked: "辅导员已撤回",
+};
 const fileStatuses = {
   not_started: "等待审批",
   generating: "文件生成中",
   ready: "文件已生成",
   failed: "审批已通过，文件生成失败",
+  cancelled: "已撤回，不能继续操作",
 };
 const kinds = { course: "课程", activity: "活动", other: "其他" };
 </script>
@@ -158,6 +175,11 @@ const kinds = { course: "课程", activity: "活动", other: "其他" };
       }}
     </p>
     <p class="muted">{{ fileStatuses[request.file_status] }}</p>
+    <p v-if="request.withdrawal" class="muted">
+      {{ request.withdrawal.actor }} ·
+      {{ new Date(request.withdrawal.at).toLocaleString() }}<br />
+      撤回原因：{{ request.withdrawal.reason || "未填写" }}
+    </p>
     <a
       v-for="document in request.documents"
       :key="document.id"
@@ -197,12 +219,59 @@ const kinds = { course: "课程", activity: "活动", other: "其他" };
       </p>
     </template>
     <button
-      v-if="request.file_status === 'failed'"
+      v-if="request.status === 'approved' && request.file_status === 'failed'"
       :disabled="busy"
       @click="emit('retry', request.id)"
     >
       重新生成文件
     </button>
+    <button
+      v-if="
+        (role === 'student' && request.status === 'pending') ||
+        (role === 'counselor' && request.status === 'approved')
+      "
+      class="danger"
+      :disabled="busy"
+      @click="withdrawalDialog.showModal()"
+    >
+      {{ role === "student" ? "撤回申请" : "撤回请假条" }}
+    </button>
+    <dialog
+      ref="withdrawalDialog"
+      class="preview-dialog feedback-dialog"
+      :aria-labelledby="`withdraw-title-${request.id}`"
+    >
+      <h2 :id="`withdraw-title-${request.id}`">
+        {{ role === "student" ? "撤回申请" : "撤回请假条" }}
+      </h2>
+      <p>
+        {{
+          role === "student"
+            ? "撤回后双方仍可查看记录，但不能再审批或操作。"
+            : "撤回后保留审批记录，系统中的 PDF 将失效，不能再查看、下载或生成。"
+        }}
+      </p>
+      <label
+        >撤回原因（选填）<textarea
+          v-model="withdrawalReason"
+          maxlength="2000"
+          :disabled="busy"
+        ></textarea>
+      </label>
+      <div class="actions">
+        <button
+          class="danger"
+          :disabled="busy"
+          @click="
+            withdrawalDialog.close();
+            emit('withdraw', { id: request.id, reason: withdrawalReason });
+          "
+        >
+          确认撤回
+        </button>
+        <button class="light" @click="withdrawalDialog.close()">取消</button>
+      </div>
+    </dialog>
     <dialog ref="dialog" class="preview-dialog" @close="clearPreview">
       <div class="section-title">
         <div>
