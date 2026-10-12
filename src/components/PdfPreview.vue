@@ -64,7 +64,7 @@ async function render() {
   } catch (e) {
     if (version !== generation) return;
     loading.value = false;
-    error.value = "PDF 页面加载失败，请重新预览或在新窗口查看。";
+    error.value = "PDF 页面加载失败，请重新预览或下载 PDF 查看。";
     emit("error", url);
   }
 }

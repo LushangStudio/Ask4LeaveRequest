@@ -310,9 +310,10 @@ const kinds = { course: "课程", activity: "活动", other: "其他" };
         <a
           class="file"
           :href="previewUrls[selected]"
-          target="_blank"
-          rel="noopener"
-          >在新窗口查看当前 PDF</a
+          :download="
+            viewingDocument?.name || `leave-preview-${selected + 1}.pdf`
+          "
+          >下载 PDF</a
         >
         <p v-if="preview?.watermark" class="caption">
           签名水印：{{ preview.watermark }}
