@@ -304,12 +304,8 @@ legend {
   padding: 50px 10px;
   color: #8a94a6;
 }
-#message:not(:empty) {
-  padding: 13px;
-  margin-bottom: 18px;
-  background: #fef2f2;
-  border-radius: 9px;
-  white-space: pre-wrap;
+.feedback-dialog {
+  max-width: 480px;
 }
 footer {
   text-align: center;

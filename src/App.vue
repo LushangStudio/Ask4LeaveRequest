@@ -5,11 +5,13 @@ import LeaveForm from "./components/LeaveForm.vue";
 import RequestCard from "./components/RequestCard.vue";
 import SignatureEditor from "./components/SignatureEditor.vue";
 import AccountMenu from "./components/AccountMenu.vue";
+import FeedbackDialog from "./components/FeedbackDialog.vue";
 
 const user = ref(null);
 const identity = ref("student-a");
 const records = ref([]);
 const message = ref("");
+const formMessage = ref("");
 const busy = ref(false);
 const formVersion = ref(0);
 const identities = ref([]);
@@ -55,14 +57,19 @@ async function loadRecords() {
     throw error;
   }
 }
-async function run(action) {
+async function run(
+  action,
+  { messageTarget = message, silentUnauthorized = false } = {},
+) {
   if (busy.value) return;
   busy.value = true;
-  message.value = "";
+  messageTarget.value = "";
   try {
     await action();
   } catch (error) {
-    message.value = error.status === 401 ? loginHint.value : error.message;
+    if (!(silentUnauthorized && error.status === 401))
+      messageTarget.value =
+        error.status === 401 ? loginHint.value : error.message;
   } finally {
     busy.value = false;
   }
@@ -73,17 +80,21 @@ function login() {
     user.value = null;
     records.value = [];
     signatureVersion.value = null;
+    formMessage.value = "";
     formVersion.value++;
     await loadRecords();
   });
 }
 function submit(payload) {
-  return run(async () => {
-    await api("requests", payload);
-    formVersion.value++;
-    await loadRecords();
-    message.value = "申请已提交，等待辅导员审批。";
-  });
+  return run(
+    async () => {
+      await api("requests", payload);
+      formVersion.value++;
+      await loadRecords();
+      formMessage.value = "申请已提交，等待辅导员审批。";
+    },
+    { messageTarget: formMessage },
+  );
 }
 function decide({ id, outcome, opinion, preview_id }) {
   return run(async () => {
@@ -104,6 +115,7 @@ function logout() {
     user.value = null;
     records.value = [];
     signatureVersion.value = null;
+    formMessage.value = "";
     message.value = loginHint.value;
   });
 }
@@ -117,7 +129,7 @@ onMounted(async () => {
   } catch (error) {
     message.value = error.message;
   }
-  await run(loadRecords);
+  await run(loadRecords, { silentUnauthorized: true });
 });
 </script>
 
@@ -201,7 +213,7 @@ onMounted(async () => {
           : "演示环境"
       }}仅使用虚构数据，生成文件不是正式请假凭证。
     </div>
-    <div id="message" role="status" aria-live="polite">{{ message }}</div>
+    <FeedbackDialog :message="message" @close="message = ''" />
     <SignatureEditor
       v-if="user?.role === 'counselor'"
       :key="user.id"
@@ -217,8 +229,9 @@ onMounted(async () => {
         :key="`${user.id}-${formVersion}`"
         :profile="profile"
         :busy="busy"
+        :message="formMessage"
         @submit="submit"
-        @message="message = $event"
+        @message="formMessage = $event"
       />
       <section class="panel">
         <div class="section-title">

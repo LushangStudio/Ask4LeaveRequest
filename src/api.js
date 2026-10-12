@@ -31,7 +31,9 @@ export async function api(path, body) {
       typeof detail === "string"
         ? detail
         : Array.isArray(detail)
-          ? detail.map((item) => item.msg).join("\n")
+          ? detail
+              .map((item) => item.msg.replace(/^Value error,\s*/, ""))
+              .join("\n")
           : `请求失败（${response.status}），请稍后重试`;
     const error = new Error(message);
     error.status = response.status;

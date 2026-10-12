@@ -1,7 +1,7 @@
 <script setup>
 import { reactive } from "vue";
 
-defineProps({ busy: Boolean, profile: String });
+defineProps({ busy: Boolean, profile: String, message: String });
 const emit = defineEmits(["submit", "message"]);
 const newItem = () => ({
   id: crypto.randomUUID(),
@@ -152,6 +152,15 @@ function submit() {
         <button id="submit" class="primary" :disabled="busy">
           {{ busy ? "正在处理…" : "提交申请" }}
         </button>
+        <p
+          v-if="message"
+          id="submit-message"
+          class="inline-error"
+          role="status"
+          aria-live="polite"
+        >
+          {{ message }}
+        </p>
       </fieldset>
     </form>
   </section>
