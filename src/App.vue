@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { api, apiUrl } from "./api.js";
 import LeaveForm from "./components/LeaveForm.vue";
 import RequestCard from "./components/RequestCard.vue";
@@ -131,7 +131,19 @@ function logout() {
     message.value = loginHint.value;
   });
 }
+let pollTimer;
+onUnmounted(() => clearInterval(pollTimer));
 onMounted(async () => {
+  pollTimer = setInterval(() => {
+    if (
+      document.visibilityState === "visible" &&
+      user.value &&
+      !busy.value &&
+      records.value.some((row) => row.file_status === "generating")
+    ) {
+      run(loadRecords);
+    }
+  }, 3000);
   try {
     runtime.value = await api("runtime");
     if (runtime.value.demo_login) {

@@ -38,6 +38,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.platypus import Image as PDFImage, KeepTogether
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
+from app.http_limits import HTTPResourceLimits
 from app.directory import read_directories, DirectoryConfig
 from app.student_import import preview_import
 from app.leave_dates import leave_end_limit
@@ -99,6 +100,15 @@ class Request(Base):
     file_status: Mapped[str] = mapped_column(String(16), default='not_started')
     generation_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created: Mapped[str] = mapped_column(String(40))
+class PDFJob(Base):
+    __tablename__ = 'pdf_jobs'
+    request_id: Mapped[str] = mapped_column(ForeignKey('leave_requests.id'), primary_key=True)
+    state: Mapped[str] = mapped_column(String(16), default='queued', index=True)
+    token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    available: Mapped[datetime] = mapped_column(DateTime, index=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
 class Item(Base):
     __tablename__ = 'leave_items'
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -260,10 +270,19 @@ async def lifespan(app):
             db.add(RequestCounselor(request_id=row.id,counselor_id=row.counselor_id))
         db.query(ApprovalPreview).filter(ApprovalPreview.expires < datetime.now(timezone.utc).replace(tzinfo=None)).delete()
         db.query(OAuthState).filter(OAuthState.expires < datetime.now(timezone.utc).replace(tzinfo=None)).delete()
-        # A stopped process may leave a job in progress. Mark it retryable on demo restart.
-        db.execute(update(Request).where(Request.file_status=='generating').values(file_status='failed', generation_error='生成被中断，请重试'))
+        from app.pdf_jobs import async_enabled, seed_legacy_jobs
+        if async_enabled():
+            seed_legacy_jobs(db)
+        else:
+            db.execute(update(Request).where(Request.file_status=='generating').values(file_status='failed', generation_error='生成被中断，请重试'))
         db.commit()
-    yield
+    from app.pdf_jobs import start_worker
+    worker = start_worker() if async_enabled() else None
+    try:
+        yield
+    finally:
+        if worker:
+            worker.stop()
 app = FastAPI(title='Ask4LeaveRequest',lifespan=lifespan)
 def db_session():
     with Session(engine) as db: yield db
@@ -336,7 +355,13 @@ def me(user:Person=Depends(current_user),leave_session:str|None=Cookie(default=N
             'auth_provider':'uis' if uis else 'test' if db.get(TestLoginSession,digest) else 'demo',
             'user_type':uis.user_type if uis else None}
 @app.get('/api/health')
-def health(): return {'status':'ok','mode':os.getenv('APP_MODE','disabled')}
+def health(db:Session=Depends(db_session)):
+    try:
+        db.execute(select(DirectoryState.id).limit(1))
+        db.execute(select(PDFJob.request_id).limit(1))
+    except Exception:
+        raise HTTPException(503,'服务暂不可用') from None
+    return {'status':'ok','mode':os.getenv('APP_MODE','disabled')}
 
 @app.get('/api/runtime')
 def runtime():
@@ -779,8 +804,10 @@ def decide(rid:str,body:DecisionInput,db:Session=Depends(db_session),user:Person
     if preview:
         db.add(ApprovalSignature(request_id=rid,signature_version=preview.signature_version,content=preview.signature_content,
                                  digest=hashlib.sha256(preview.signature_content).hexdigest(),watermark=preview.watermark))
+    from app.pdf_jobs import async_enabled, enqueue
+    if body.outcome=='approved' and async_enabled(): enqueue(db,rid)
     db.commit()
-    if body.outcome=='approved': generate(rid)
+    if body.outcome=='approved' and not async_enabled(): generate(rid)
     db.expire_all()
     return serialize(db,db.get(Request,rid))
 
@@ -854,7 +881,11 @@ def preview_pdf(pid:str,position:int,db:Session=Depends(db_session),user:Person=
 def retry(rid:str,db:Session=Depends(db_session),user:Person=Depends(current_user)):
     row=authorized(db,rid,user)
     if row.status!='approved': raise HTTPException(409,'只有已通过的申请可生成文件')
-    generate(rid); db.expire_all()
+    from app.pdf_jobs import async_enabled, enqueue
+    if async_enabled():
+        enqueue(db,rid);db.commit()
+    else:generate(rid)
+    db.expire_all()
     return serialize(db,db.get(Request,rid))
 @app.get('/api/documents/{did}')
 def download(did:str,db:Session=Depends(db_session),user:Person=Depends(current_user)):
@@ -882,6 +913,7 @@ async def no_cache(request,call_next):
     response.headers['Referrer-Policy']='no-referrer'
     response.headers['X-Frame-Options']='SAMEORIGIN'
     return response
+app.add_middleware(HTTPResourceLimits)
 app.add_middleware(TestQueryRedaction)
 # Relative Vite asset URLs work both directly and behind the /leave/ proxy.
 FRONTEND_DIST = ROOT/'dist'

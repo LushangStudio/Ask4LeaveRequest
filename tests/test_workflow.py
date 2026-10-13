@@ -4,7 +4,8 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 from pypdf import PdfReader
-from sqlalchemy import create_engine, select, func
+from sqlalchemy import create_engine, select, func, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 from PIL import Image, ImageDraw
 from app import main as m
@@ -12,8 +13,25 @@ from app import main as m
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv('APP_MODE','demo')
-    monkeypatch.setattr(m,'engine',create_engine('sqlite:///'+str(tmp_path/'test.db'),connect_args={'check_same_thread':False}))
-    with TestClient(m.app) as c: yield c
+    mysql_url=os.getenv('MYSQL_TEST_URL')
+    if mysql_url:
+        schema='ask4leave_ci_'+uuid.uuid4().hex
+        admin=create_engine(mysql_url)
+        with admin.begin() as connection:
+            connection.execute(text(f'CREATE DATABASE `{schema}` CHARACTER SET utf8mb4'))
+        test_engine=create_engine(make_url(mysql_url).set(database=schema),pool_pre_ping=True)
+    else:
+        test_engine=create_engine('sqlite:///'+str(tmp_path/'test.db'),connect_args={'check_same_thread':False})
+    monkeypatch.setattr(m,'engine',test_engine)
+    try:
+        with TestClient(m.app) as c: yield c
+    finally:
+        test_engine.dispose()
+        if mysql_url:
+            assert schema.startswith('ask4leave_ci_')
+            with admin.begin() as connection:
+                connection.execute(text(f'DROP DATABASE `{schema}`'))
+            admin.dispose()
 
 def signature_payload():
     image=Image.new('RGB',(600,180),'white'); draw=ImageDraw.Draw(image)
