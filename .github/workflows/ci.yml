@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 15
     env:
       APP_MODE: demo
-      LEAVE_DATA_DIR: ${{ runner.temp }}/ask4leave
+      LEAVE_DATA_DIR: /tmp/ask4leave-ci
       PDF_FONT_PATH: /usr/share/fonts/truetype/wqy/wqy-zenhei.ttc
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
