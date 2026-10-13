@@ -884,7 +884,10 @@ def retry(rid:str,db:Session=Depends(db_session),user:Person=Depends(current_use
     from app.pdf_jobs import async_enabled, enqueue
     if async_enabled():
         enqueue(db,rid);db.commit()
-    else:generate(rid)
+    else:
+        # End MySQL's REPEATABLE READ snapshot before another session generates.
+        db.commit()
+        generate(rid)
     db.expire_all()
     return serialize(db,db.get(Request,rid))
 @app.get('/api/documents/{did}')
