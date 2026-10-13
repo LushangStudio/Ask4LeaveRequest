@@ -81,3 +81,9 @@ set +a
 管理员独立班级管理页、管理员配置和升级步骤见 [docs/class-management.md](docs/class-management.md)。
 
 请假结束日期最多为北京时间当前日期后三个自然月，月末按目标月最后一天处理；前后端均校验。
+
+## 持续集成
+
+GitHub Actions `CI / Build and test` 在 main 推送、Pull Request 及手动触发时运行。Ubuntu 干净环境使用 Node 22、Python 3.10 和中文字体，依次执行 `npm ci`、格式检查、Vite 构建、Python 依赖检查与全部 pytest；同时验证 `/`、`/leave/` 下实际构建资源可加载，且构建产物、数据库和运行环境文件未被 Git 跟踪。工作流只有仓库读取权限，不读取生产密钥，也不连接或部署生产服务器。
+
+本地运行测试前先执行 `npm ci && npm run build`；测试使用临时数据库及虚构身份。
