@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { api, apiUrl } from "./api.js";
 import LeaveForm from "./components/LeaveForm.vue";
-import RequestCard from "./components/RequestCard.vue";
+import RequestList from "./components/RequestList.vue";
 import SignatureEditor from "./components/SignatureEditor.vue";
 import AccountMenu from "./components/AccountMenu.vue";
 import FeedbackDialog from "./components/FeedbackDialog.vue";
@@ -305,10 +305,10 @@ onMounted(async () => {
           <div v-else-if="!records.length" class="empty">
             暂时没有申请<br /><small>提交后可在这里查看处理进度</small>
           </div>
-          <RequestCard
-            v-for="record in records"
-            :key="`${user.id}-${record.id}`"
-            :request="record"
+          <RequestList
+            v-else
+            :key="`${user.id}-${viewRole}`"
+            :records="records"
             :role="viewRole"
             :busy="busy"
             :signature-version="signatureVersion"

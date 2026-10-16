@@ -14,8 +14,9 @@ const props = defineProps({
   role: String,
   busy: Boolean,
   signatureVersion: String,
+  expanded: { type: Boolean, default: true },
 });
-const emit = defineEmits(["decision", "retry", "withdraw"]);
+const emit = defineEmits(["decision", "retry", "withdraw", "toggle"]);
 const opinion = ref("");
 const dialog = ref(null);
 const preview = ref(null);
@@ -147,12 +148,18 @@ const kinds = { course: "课程", activity: "活动", other: "其他" };
 
 <template>
   <article class="record">
-    <div class="section-title">
-      <h3>{{ request.student.name }}</h3>
+    <button
+      class="record-toggle light"
+      :aria-expanded="expanded"
+      :aria-controls="`record-details-${request.id}`"
+      @click="emit('toggle')"
+    >
+      <strong>{{ request.student.name }}</strong>
       <span class="status" :class="request.status">{{
         statuses[request.status]
       }}</span>
-    </div>
+      <span>{{ expanded ? "收起详情 ▴" : "展开详情 ▾" }}</span>
+    </button>
     <p>
       {{ request.starts }} 至 {{ request.ends }} ·
       {{ request.layout === "combined" ? "合并生成" : "分别生成" }}
@@ -161,174 +168,178 @@ const kinds = { course: "课程", activity: "活动", other: "其他" };
       {{ request.student.class_name || "历史班级记录" }} ·
       {{ request.student.student_number }}
     </p>
-    <p>{{ request.reason }}</p>
-    <ul>
-      <li v-for="(item, index) in request.items" :key="index">
-        {{ kinds[item.kind] }} · {{ item.title }}<br />{{ item.day }}
-        {{ item.time }}
-      </li>
-    </ul>
-    <p v-if="request.approval" class="muted">
-      {{ request.approval.approver }} ·
-      {{ new Date(request.approval.at).toLocaleString() }}<br />审批意见：{{
-        request.approval.opinion || "同意"
-      }}
-    </p>
-    <p class="muted">{{ fileStatuses[request.file_status] }}</p>
-    <p v-if="request.withdrawal" class="muted">
-      {{ request.withdrawal.actor }} ·
-      {{ new Date(request.withdrawal.at).toLocaleString() }}<br />
-      撤回原因：{{ request.withdrawal.reason || "未填写" }}
-    </p>
-    <a
-      v-for="document in request.documents"
-      :key="document.id"
-      class="file"
-      target="_blank"
-      rel="noopener"
-      :href="documentUrl(document.id)"
-      @click.prevent="viewDocument(document)"
-      >查看 PDF · {{ document.name }}</a
-    >
-    <template v-if="role === 'counselor' && request.status === 'pending'">
-      <textarea
-        v-model="opinion"
-        placeholder="审批意见（驳回时必填）"
-        maxlength="2000"
-        aria-label="审批意见"
-        :disabled="busy"
-      ></textarea>
-      <div class="actions">
-        <button
-          :disabled="busy || previewBusy || !signatureVersion"
-          @click="openPreview"
-        >
-          预览并审批
-        </button>
-        <button
-          :disabled="busy"
-          @click="
-            emit('decision', { id: request.id, outcome: 'rejected', opinion })
-          "
-        >
-          驳回申请
-        </button>
-      </div>
-      <p v-if="!signatureVersion" class="muted caption">
-        请先在上方保存个人签名，再预览和通过申请。驳回无需签名。
-      </p>
-    </template>
-    <button
-      v-if="request.status === 'approved' && request.file_status === 'failed'"
-      :disabled="busy"
-      @click="emit('retry', request.id)"
-    >
-      重新生成文件
-    </button>
-    <button
-      v-if="
-        (role === 'student' && request.status === 'pending') ||
-        (role === 'counselor' && request.status === 'approved')
-      "
-      class="danger"
-      :disabled="busy"
-      @click="withdrawalDialog.showModal()"
-    >
-      {{ role === "student" ? "撤回申请" : "撤回请假条" }}
-    </button>
-    <dialog
-      ref="withdrawalDialog"
-      class="preview-dialog feedback-dialog"
-      :aria-labelledby="`withdraw-title-${request.id}`"
-    >
-      <h2 :id="`withdraw-title-${request.id}`">
-        {{ role === "student" ? "撤回申请" : "撤回请假条" }}
-      </h2>
-      <p>
-        {{
-          role === "student"
-            ? "撤回后双方仍可查看记录，但不能再审批或操作。"
-            : "撤回后保留审批记录，系统中的 PDF 将失效，不能再查看、下载或生成。"
+    <div v-show="expanded" :id="`record-details-${request.id}`">
+      <p>{{ request.reason }}</p>
+      <ul>
+        <li v-for="(item, index) in request.items" :key="index">
+          {{ kinds[item.kind] }} · {{ item.title }}<br />{{ item.day }}
+          {{ item.time }}
+        </li>
+      </ul>
+      <p v-if="request.approval" class="muted">
+        {{ request.approval.approver }} ·
+        {{ new Date(request.approval.at).toLocaleString() }}<br />审批意见：{{
+          request.approval.opinion || "同意"
         }}
       </p>
-      <label
-        >撤回原因（选填）<textarea
-          v-model="withdrawalReason"
+      <p class="muted">{{ fileStatuses[request.file_status] }}</p>
+      <p v-if="request.withdrawal" class="muted">
+        {{ request.withdrawal.actor }} ·
+        {{ new Date(request.withdrawal.at).toLocaleString() }}<br />
+        撤回原因：{{ request.withdrawal.reason || "未填写" }}
+      </p>
+      <a
+        v-for="document in request.documents"
+        :key="document.id"
+        class="file"
+        target="_blank"
+        rel="noopener"
+        :href="documentUrl(document.id)"
+        @click.prevent="viewDocument(document)"
+        >查看 PDF · {{ document.name }}</a
+      >
+      <template v-if="role === 'counselor' && request.status === 'pending'">
+        <textarea
+          v-model="opinion"
+          placeholder="审批意见（驳回时必填）"
           maxlength="2000"
+          aria-label="审批意见"
           :disabled="busy"
         ></textarea>
-      </label>
-      <div class="actions">
-        <button
-          class="danger"
-          :disabled="busy"
-          @click="
-            withdrawalDialog.close();
-            emit('withdraw', { id: request.id, reason: withdrawalReason });
-          "
-        >
-          确认撤回
-        </button>
-        <button class="light" @click="withdrawalDialog.close()">取消</button>
-      </div>
-    </dialog>
-    <dialog ref="dialog" class="preview-dialog" @close="clearPreview">
-      <div class="section-title">
-        <div>
-          <small>{{
-            viewingDocument ? "SIGNED LEAVE DOCUMENT" : "REVIEW BEFORE APPROVAL"
-          }}</small>
-          <h2>{{ viewingDocument ? "已签署请假条" : "请假条审批预览" }}</h2>
-        </div>
-        <button class="light" aria-label="关闭预览" @click="dialog.close()">
-          关闭
-        </button>
-      </div>
-      <p v-if="!viewingDocument" class="muted caption">
-        核对申请内容与签名。预览有效期 15 分钟，通过后会留存本次签名快照。
-      </p>
-      <p v-else class="muted caption">
-        {{ request.student.name }} · {{ viewingDocument.name }} ·
-        已保存的审批文件
-      </p>
-      <p v-if="previewBusy" role="status">正在加载带签名的请假条…</p>
-      <p v-if="previewError" role="alert" class="inline-error">
-        {{ previewError }}
-      </p>
-      <template v-if="previewUrls.length">
-        <div v-if="previewUrls.length > 1" class="preview-tabs">
+        <div class="actions">
           <button
-            v-for="(_, index) in previewUrls"
-            :key="index"
-            :class="{ light: selected !== index }"
-            @click="choosePreview(index)"
+            :disabled="busy || previewBusy || !signatureVersion"
+            @click="openPreview"
           >
-            请假条 {{ index + 1 }} {{ seen.has(index) ? "✓" : "" }}
+            预览并审批
+          </button>
+          <button
+            :disabled="busy"
+            @click="
+              emit('decision', { id: request.id, outcome: 'rejected', opinion })
+            "
+          >
+            驳回申请
           </button>
         </div>
-        <PdfPreview :url="previewUrls[selected]" @loaded="rendered" />
-        <a
-          class="file"
-          :href="previewUrls[selected]"
-          :download="viewingDocument?.name || preview?.filenames?.[selected]"
-          >下载 PDF</a
-        >
-        <p v-if="preview?.watermark" class="caption">
-          签名水印：{{ preview.watermark }}
+        <p v-if="!signatureVersion" class="muted caption">
+          请先在上方保存个人签名，再预览和通过申请。驳回无需签名。
         </p>
-        <label v-if="!viewingDocument" class="radio"
-          ><input
-            v-model="confirmed"
-            type="checkbox"
-            :disabled="busy"
-          />我已核对全部请假条及签名，确认通过申请</label
-        >
-        <div v-if="!viewingDocument" class="actions">
-          <button :disabled="busy || !canApprove" @click="approve">
-            确认通过并签署</button
-          ><button class="light" @click="dialog.close()">返回修改</button>
-        </div>
       </template>
-    </dialog>
+      <button
+        v-if="request.status === 'approved' && request.file_status === 'failed'"
+        :disabled="busy"
+        @click="emit('retry', request.id)"
+      >
+        重新生成文件
+      </button>
+      <button
+        v-if="
+          (role === 'student' && request.status === 'pending') ||
+          (role === 'counselor' && request.status === 'approved')
+        "
+        class="danger"
+        :disabled="busy"
+        @click="withdrawalDialog.showModal()"
+      >
+        {{ role === "student" ? "撤回申请" : "撤回请假条" }}
+      </button>
+      <dialog
+        ref="withdrawalDialog"
+        class="preview-dialog feedback-dialog"
+        :aria-labelledby="`withdraw-title-${request.id}`"
+      >
+        <h2 :id="`withdraw-title-${request.id}`">
+          {{ role === "student" ? "撤回申请" : "撤回请假条" }}
+        </h2>
+        <p>
+          {{
+            role === "student"
+              ? "撤回后双方仍可查看记录，但不能再审批或操作。"
+              : "撤回后保留审批记录，系统中的 PDF 将失效，不能再查看、下载或生成。"
+          }}
+        </p>
+        <label
+          >撤回原因（选填）<textarea
+            v-model="withdrawalReason"
+            maxlength="2000"
+            :disabled="busy"
+          ></textarea>
+        </label>
+        <div class="actions">
+          <button
+            class="danger"
+            :disabled="busy"
+            @click="
+              withdrawalDialog.close();
+              emit('withdraw', { id: request.id, reason: withdrawalReason });
+            "
+          >
+            确认撤回
+          </button>
+          <button class="light" @click="withdrawalDialog.close()">取消</button>
+        </div>
+      </dialog>
+      <dialog ref="dialog" class="preview-dialog" @close="clearPreview">
+        <div class="section-title">
+          <div>
+            <small>{{
+              viewingDocument
+                ? "SIGNED LEAVE DOCUMENT"
+                : "REVIEW BEFORE APPROVAL"
+            }}</small>
+            <h2>{{ viewingDocument ? "已签署请假条" : "请假条审批预览" }}</h2>
+          </div>
+          <button class="light" aria-label="关闭预览" @click="dialog.close()">
+            关闭
+          </button>
+        </div>
+        <p v-if="!viewingDocument" class="muted caption">
+          核对申请内容与签名。预览有效期 15 分钟，通过后会留存本次签名快照。
+        </p>
+        <p v-else class="muted caption">
+          {{ request.student.name }} · {{ viewingDocument.name }} ·
+          已保存的审批文件
+        </p>
+        <p v-if="previewBusy" role="status">正在加载带签名的请假条…</p>
+        <p v-if="previewError" role="alert" class="inline-error">
+          {{ previewError }}
+        </p>
+        <template v-if="previewUrls.length">
+          <div v-if="previewUrls.length > 1" class="preview-tabs">
+            <button
+              v-for="(_, index) in previewUrls"
+              :key="index"
+              :class="{ light: selected !== index }"
+              @click="choosePreview(index)"
+            >
+              请假条 {{ index + 1 }} {{ seen.has(index) ? "✓" : "" }}
+            </button>
+          </div>
+          <PdfPreview :url="previewUrls[selected]" @loaded="rendered" />
+          <a
+            class="file"
+            :href="previewUrls[selected]"
+            :download="viewingDocument?.name || preview?.filenames?.[selected]"
+            >下载 PDF</a
+          >
+          <p v-if="preview?.watermark" class="caption">
+            签名水印：{{ preview.watermark }}
+          </p>
+          <label v-if="!viewingDocument" class="radio"
+            ><input
+              v-model="confirmed"
+              type="checkbox"
+              :disabled="busy"
+            />我已核对全部请假条及签名，确认通过申请</label
+          >
+          <div v-if="!viewingDocument" class="actions">
+            <button :disabled="busy || !canApprove" @click="approve">
+              确认通过并签署</button
+            ><button class="light" @click="dialog.close()">返回修改</button>
+          </div>
+        </template>
+      </dialog>
+    </div>
   </article>
 </template>
