@@ -12,6 +12,16 @@ const loading = ref(true);
 const error = ref("");
 const zoom = ref(1);
 const canvases = new Map();
+const pageSizes = new Map();
+
+function applyZoom() {
+  for (const [number, size] of pageSizes) {
+    const canvas = canvases.get(number);
+    if (!canvas) continue;
+    canvas.style.width = `${Math.floor(size.width * zoom.value)}px`;
+    canvas.style.height = `${Math.floor(size.height * zoom.value)}px`;
+  }
+}
 let task = null;
 let generation = 0;
 
@@ -26,6 +36,8 @@ async function render() {
   loading.value = true;
   error.value = "";
   pages.value = [];
+  pageSizes.clear();
+  zoom.value = 1;
   await nextTick();
   try {
     const loadingTask = getDocument({ url, isEvalSupported: false });
@@ -34,23 +46,23 @@ async function render() {
     if (version !== generation) return;
     pages.value = Array.from({ length: pdf.numPages }, (_, index) => index + 1);
     await nextTick();
-    const width =
-      Math.max(220, Math.min(1100, holder.value.clientWidth - 24)) * zoom.value;
+    const width = Math.max(220, Math.min(1100, holder.value.clientWidth - 24));
     for (const number of pages.value) {
       const page = await pdf.getPage(number);
       if (version !== generation) return;
       const initial = page.getViewport({ scale: 1 });
       const viewport = page.getViewport({ scale: width / initial.width });
       const ratio = Math.min(
-        window.devicePixelRatio || 1,
-        2,
+        // Render once for the maximum 200% zoom; cap memory per page.
+        (window.devicePixelRatio || 1) * 2,
+        4,
         Math.sqrt(8_000_000 / (viewport.width * viewport.height)),
       );
       const canvas = canvases.get(number);
       canvas.width = Math.floor(viewport.width * ratio);
       canvas.height = Math.floor(viewport.height * ratio);
-      canvas.style.width = `${Math.floor(viewport.width)}px`;
-      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      pageSizes.set(number, { width: viewport.width, height: viewport.height });
+      applyZoom();
       await page.render({
         canvasContext: canvas.getContext("2d"),
         viewport,
@@ -68,7 +80,8 @@ async function render() {
     emit("error", url);
   }
 }
-watch([() => props.url, zoom], render, { immediate: true });
+watch(() => props.url, render, { immediate: true });
+watch(zoom, applyZoom);
 onBeforeUnmount(() => {
   generation++;
   if (task) task.destroy();
