@@ -4,13 +4,12 @@ import io
 from app.directory import DirectoryConfig,StudentConfig
 from pydantic import ValidationError
 
-HEADER=['学号','班级','学院','专业','年级']
+HEADER=['学号','专业']
 
-def preview_import(text,directory):
+def preview_import(text,directory,class_id):
     data=directory.model_dump()
-    classes={c.class_id:c.class_id for c in directory.classes}
-    names={}
-    for group in directory.classes:names.setdefault(group.name,[]).append(group.class_id)
+    if class_id not in {c.class_id for c in directory.classes}:
+        return {'students':[],'errors':[{'line':0,'message':'请选择有效的导入班级'}],'created':0,'updated':0},directory
     existing={s.user_id:s for s in directory.students}
     imported=[];errors=[];seen=set();created=updated=0
     reader=csv.reader(io.StringIO(text.lstrip('\ufeff')),strict=True)
@@ -22,19 +21,13 @@ def preview_import(text,directory):
             if line==1 and fields==HEADER:continue
             if len(imported)+len(errors)>=5000:
                 errors.append({'line':line,'message':'每次最多导入5000人'});break
-            if len(fields)!=5:
-                errors.append({'line':line,'message':'须填写五列：学号,班级,学院,专业,年级'});continue
-            uid,group,college,major,grade=fields
+            if len(fields)!=2:
+                errors.append({'line':line,'message':'须填写两列：学号,专业'});continue
+            uid,major=fields
             if uid in seen:
                 errors.append({'line':line,'message':'本次导入学号重复'});continue
             seen.add(uid)
-            class_id=classes.get(group)
-            if not class_id:
-                matches=names.get(group,[])
-                if len(matches)!=1:
-                    errors.append({'line':line,'message':'班级不存在或名称不唯一，请使用班级编号'});continue
-                class_id=matches[0]
-            try:student=StudentConfig(user_id=uid,class_id=class_id,college=college,major=major,grade=grade)
+            try:student=StudentConfig(user_id=uid,class_id=class_id,major=major)
             except ValidationError:
                 errors.append({'line':line,'message':'必填内容为空或格式/长度不合法'});continue
             if uid in existing:updated+=1

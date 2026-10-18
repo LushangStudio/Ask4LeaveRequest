@@ -14,6 +14,7 @@ const busy = ref(false),
   active = ref("classes");
 const original = ref(""),
   refreshDialog = ref(null);
+const importClass = ref("");
 const importText = ref(""),
   importPreview = ref(null),
   importDialog = ref(null);
@@ -23,20 +24,28 @@ const dirty = computed(
 const workspaceUrl = new URL("../", window.location.href).href;
 const studentFields = {
   user_id: "学号",
-  college: "学院",
   major: "专业",
-  grade: "年级",
 };
 const tabs = [
   { key: "classes", label: "班级" },
-  { key: "counselors", label: "辅导员" },
   { key: "students", label: "学生" },
 ];
+function classLabel(group) {
+  return group
+    ? `${group.name} · ${group.grade} · ${group.department}`
+    : "未选择班级";
+}
 function accept(result) {
   directory.value = result.directory;
   directory.value.classes.forEach(
-    (c) => (c.counselor_ids_text = c.counselor_ids.join(", ")),
+    (c) =>
+      (c.counselor_ids_text = directory.value.class_counselors
+        .filter((r) => r.class_id === c.class_id)
+        .map((r) => r.user_id)
+        .join(", ")),
   );
+  if (!directory.value.classes.some((c) => c.class_id === importClass.value))
+    importClass.value = "";
   revision.value = result.revision;
   original.value = JSON.stringify(directory.value);
 }
@@ -58,16 +67,18 @@ function requestRefresh() {
 function add() {
   const blank =
     active.value === "classes"
-      ? { class_id: "", name: "", counselor_ids: [], counselor_ids_text: "" }
-      : active.value === "counselors"
-        ? { user_id: "" }
-        : {
-            user_id: "",
-            class_id: directory.value.classes[0]?.class_id || "",
-            college: "",
-            major: "",
-            grade: "",
-          };
+      ? {
+          class_id: crypto.randomUUID(),
+          name: "",
+          grade: "",
+          department: "",
+          counselor_ids_text: "",
+        }
+      : {
+          user_id: "",
+          major: "",
+          class_id: directory.value.classes[0]?.class_id || "",
+        };
   directory.value[active.value].push(blank);
   status.value = "";
 }
@@ -79,29 +90,27 @@ async function save() {
   busy.value = true;
   status.value = "";
   const payload = {
-    version: 1,
-    counselors: directory.value.counselors.map(({ user_id }) => ({
-      user_id,
-    })),
+    version: 2,
     classes: directory.value.classes.map(
-      ({ class_id, name, counselor_ids_text }) => ({
+      ({ class_id, name, grade, department }) => ({
         class_id,
         name,
-        counselor_ids: counselor_ids_text
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean),
-      }),
-    ),
-    students: directory.value.students.map(
-      ({ user_id, class_id, college, major, grade }) => ({
-        user_id,
-        class_id,
-        college,
-        major,
         grade,
+        department,
       }),
     ),
+    class_counselors: directory.value.classes.flatMap((c) =>
+      c.counselor_ids_text
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((user_id) => ({ class_id: c.class_id, user_id })),
+    ),
+    students: directory.value.students.map(({ user_id, major, class_id }) => ({
+      user_id,
+      major,
+      class_id,
+    })),
   };
   try {
     accept(
@@ -127,6 +136,7 @@ async function previewStudents() {
   try {
     importPreview.value = await api("admin/students/import/preview", {
       text: importText.value,
+      class_id: importClass.value,
       revision: revision.value,
     });
     importDialog.value.showModal();
@@ -141,6 +151,7 @@ async function commitStudents() {
   try {
     const result = await api("admin/students/import", {
       text: importText.value,
+      class_id: importClass.value,
       revision: revision.value,
     });
     accept(result);
@@ -232,19 +243,34 @@ onMounted(async () => {
             <section v-if="active === 'students'" class="item">
               <h3>批量导入学生</h3>
               <p class="caption">
-                每行一人：学号,班级,学院,专业,年级。班级填写已有班级编号或唯一名称，使用英文逗号；同学号更新资料。先保存当前编辑，再导入。
+                先选择导入班级，每行一人：学号,专业。使用英文逗号；同学号更新专业及所属班级。先保存当前编辑，再导入。
               </p>
+              <label
+                >导入班级<select
+                  v-model="importClass"
+                  @change="importPreview = null"
+                >
+                  <option value="" disabled>请选择班级</option>
+                  <option
+                    v-for="group in directory.classes"
+                    :key="group.class_id"
+                    :value="group.class_id"
+                  >
+                    {{ classLabel(group) }}
+                  </option>
+                </select></label
+              >
               <label
                 >学生批量名单<textarea
                   v-model="importText"
                   rows="6"
-                  placeholder="STUDENT001,class-2026-a,管理学院,工商管理,2026"
+                  placeholder="STUDENT001,工商管理"
                   @input="importPreview = null"
                 ></textarea>
               </label>
               <button
                 type="button"
-                :disabled="busy || dirty || !importText.trim()"
+                :disabled="busy || dirty || !importClass || !importText.trim()"
                 @click="previewStudents"
               >
                 校验并预览导入
@@ -253,7 +279,7 @@ onMounted(async () => {
             <p class="caption">
               {{
                 active === "classes"
-                  ? "班级编号及学工号使用字母、数字、下划线或连字符；多个辅导员工号用英文逗号分隔。"
+                  ? "填写班级名称、年级和院系；多个辅导员学工号用英文逗号分隔。"
                   : "学工号必须与UIS一致。兼任学生和辅导员时，两处填写相同学工号；师生姓名均从UIS登录获取。"
               }}
             </p>
@@ -273,25 +299,24 @@ onMounted(async () => {
               <template v-if="active === 'classes'"
                 ><div class="two">
                   <label
-                    >班级编号<input
-                      v-model="row.class_id"
-                      required
-                      maxlength="40" /></label
-                  ><label
                     >班级名称<input v-model="row.name" required maxlength="80"
+                  /></label>
+                  <label
+                    >年级<input v-model="row.grade" required maxlength="20"
+                  /></label>
+                  <label
+                    >院系<input
+                      v-model="row.department"
+                      required
+                      maxlength="80"
                   /></label>
                 </div>
                 <label
-                  >辅导员工号（英文逗号分隔）<input
+                  >辅导员学工号（英文逗号分隔）<input
                     v-model="row.counselor_ids_text"
                     required
                     placeholder="例如：STAFF001, STAFF002" /></label
               ></template>
-              <div v-else-if="active === 'counselors'" class="two">
-                <label
-                  >工号<input v-model="row.user_id" required maxlength="40"
-                /></label>
-              </div>
               <template v-else
                 ><div class="two">
                   <label v-for="(label, key) in studentFields" :key="key"
@@ -310,7 +335,7 @@ onMounted(async () => {
                         :key="group.class_id"
                         :value="group.class_id"
                       >
-                        {{ group.name }} · {{ group.class_id }}
+                        {{ classLabel(group) }}
                       </option>
                     </select></label
                   >
@@ -384,9 +409,7 @@ onMounted(async () => {
                 <tr>
                   <th>学号</th>
                   <th>班级</th>
-                  <th>学院</th>
                   <th>专业</th>
-                  <th>年级</th>
                 </tr>
               </thead>
               <tbody>
@@ -395,10 +418,16 @@ onMounted(async () => {
                   :key="student.user_id"
                 >
                   <td>{{ student.user_id }}</td>
-                  <td>{{ student.class_id }}</td>
-                  <td>{{ student.college }}</td>
+                  <td>
+                    {{
+                      classLabel(
+                        directory.classes.find(
+                          (c) => c.class_id === student.class_id,
+                        ),
+                      )
+                    }}
+                  </td>
                   <td>{{ student.major }}</td>
-                  <td>{{ student.grade }}</td>
                 </tr>
               </tbody>
             </table>

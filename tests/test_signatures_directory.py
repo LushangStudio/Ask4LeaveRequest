@@ -1,3 +1,4 @@
+from app.directory import class_uuid
 import base64
 import copy
 import io
@@ -200,7 +201,7 @@ def test_retired_invalid_json_cannot_reset_database_directory(client,tmp_path,mo
     monkeypatch.setenv('RELATIONSHIPS_PATH',str(source))
     with TestClient(m.app) as restarted:
         assert restarted.get('/api/demo/identities').status_code==200
-    login(client);assert client.get('/api/me').json()['profile']['class_id']=='class-a'
+    login(client);assert client.get('/api/me').json()['profile']['class_id']==class_uuid('class-a')
 
 
 def test_cross_origin_mutations_rejected(client):

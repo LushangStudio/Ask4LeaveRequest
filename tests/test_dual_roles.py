@@ -42,7 +42,7 @@ def test_dual_views_scope_multiple_classes_and_pending_withdrawal(client):
 
 def test_dual_student_cannot_self_approve_without_class_assignment(client):
     roster=dual_roster()
-    for group in roster.classes:group.counselor_ids.remove('student-a')
+    roster.class_counselors=[r for r in roster.class_counselors if r.user_id!='student-a' or r.class_id!=roster.students[0].class_id]
     with Session(m.engine) as db:m.sync_directory(db,roster)
     login(client);rid=submit(client)['id']
     assert client.post(f'/api/requests/{rid}/preview',json={}).status_code==403

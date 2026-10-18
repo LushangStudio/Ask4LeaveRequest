@@ -1,3 +1,4 @@
+from app.directory import class_uuid
 import io
 import json
 import secrets
@@ -42,7 +43,7 @@ def test_url_login_redirect_clean_url_cookie_and_role(test_client):
     cookie=response.headers['set-cookie'].lower()
     assert 'httponly' in cookie and 'samesite=strict' in cookie
     assert c.get('/api/me').json()['id']=='test-123'
-    assert c.get('/api/me').json()['profile']['class_id']=='test-class'
+    assert c.get('/api/me').json()['profile']['class_id']==class_uuid('test-class')
     assert c.get('/api/demo/identities').status_code==404
     assert c.post('/api/demo/login',json={'person_id':'test-counselor-1'}).status_code==404
     assert c.get('/api/runtime').json()['uis_login'] is False

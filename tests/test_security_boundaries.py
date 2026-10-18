@@ -52,7 +52,7 @@ def test_all_request_and_file_operations_isolate_unrelated_people(client):
         assert client.get(f"/api/previews/{preview['id']}/0").status_code in {403,404}
         assert client.get('/api/admin/directory').status_code==403
         for route in ('/api/admin/students/import/preview','/api/admin/students/import'):
-            assert client.post(route,json={'text':'x','revision':'0'*64}).status_code==403
+            assert client.post(route,json={'text':'x','revision':'0'*64,'class_id':'invalid'}).status_code==403
     login(client,'counselor-a');row=approve(client,rid).json()
     for person in ('student-b','counselor-b'):
         login(client,person)

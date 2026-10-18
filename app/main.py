@@ -152,6 +152,25 @@ class DirectoryState(Base):
     digest: Mapped[str] = mapped_column(String(64))
     updated: Mapped[str] = mapped_column(String(40))
 
+class DirectoryClass(Base):
+    __tablename__ = 'directory_classes'
+    class_id: Mapped[str] = mapped_column(String(36),primary_key=True)
+    name: Mapped[str] = mapped_column(String(80))
+    grade: Mapped[str] = mapped_column(String(20))
+    department: Mapped[str] = mapped_column(String(80))
+
+class ClassCounselor(Base):
+    __tablename__ = 'class_counselors'
+    class_id: Mapped[str] = mapped_column(ForeignKey('directory_classes.class_id'),primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(40),primary_key=True)
+
+class DirectoryStudent(Base):
+    __tablename__ = 'directory_students'
+    user_id: Mapped[str] = mapped_column(String(40),primary_key=True)
+    major: Mapped[str] = mapped_column(String(80))
+    class_id: Mapped[str] = mapped_column(ForeignKey('directory_classes.class_id'))
+
+
 def directory_digest(directory):
     return hashlib.sha256(json.dumps(directory,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
 class Document(Base):
@@ -202,14 +221,23 @@ class ApprovalPreview(Base):
     expires: Mapped[datetime] = mapped_column(DateTime, index=True)
 
 def sync_directory(db, roster, commit=True):
+    # Reconcile normalized tables within the same roster revision transaction.
+    db.query(ClassCounselor).delete(synchronize_session=False)
+    db.query(DirectoryStudent).delete(synchronize_session=False)
+    db.query(DirectoryClass).delete(synchronize_session=False)
+    db.add_all([DirectoryClass(**c.model_dump()) for c in roster.classes])
+    db.flush()
+    db.add_all([ClassCounselor(**r.model_dump()) for r in roster.class_counselors])
+    db.add_all([DirectoryStudent(**s.model_dump()) for s in roster.students])
+    db.flush()
     classes = {c.class_id:c for c in roster.classes}
     student_ids={s.user_id for s in roster.students}
     counselor_ids={c.user_id for c in roster.counselors}
     people = [(c.user_id, '', 'counselor', None, {}) for c in roster.counselors if c.user_id not in student_ids]
-    people += [(s.user_id, '', 'both' if s.user_id in counselor_ids else 'student', classes[s.class_id].counselor_ids[0],
-                {'college': s.college, 'major': s.major, 'grade': s.grade, 'student_number': s.user_id,
+    people += [(s.user_id, '', 'both' if s.user_id in counselor_ids else 'student', roster.counselors_for(s.class_id)[0],
+                {'college': classes[s.class_id].department, 'major': s.major, 'grade': classes[s.class_id].grade, 'student_number': s.user_id,
                  'class_id':s.class_id,'class_name':classes[s.class_id].name,
-                 'counselor_ids':classes[s.class_id].counselor_ids}) for s in roster.students]
+                 'counselor_ids':roster.counselors_for(s.class_id)}) for s in roster.students]
     active = {p[0] for p in people}
     admins=app.state.admin_ids
     active |= admins
@@ -255,7 +283,7 @@ async def lifespan(app):
         state=db.get(DirectoryState,1)
         if state is None:
             # JSON fixtures only bootstrap a new local demo/test database. Production never reads roster files.
-            if mode=='production':roster=DirectoryConfig(version=1,counselors=[],classes=[],students=[])
+            if mode=='production':roster=DirectoryConfig(version=2,class_counselors=[],classes=[],students=[])
             else:
                 default_roster=ROOT/'config'/('relationships.test.json' if mode=='test' else 'relationships.example.json')
                 try:roster=read_directories(os.getenv('RELATIONSHIPS_PATH',str(default_roster)),os.getenv('TEST_RELATIONSHIPS_PATH'))
@@ -271,7 +299,7 @@ async def lifespan(app):
                 state.updated=datetime.now(timezone.utc).isoformat()
         # Clear names from all directory identities, including retired entries; keep historical snapshots.
         db.execute(update(Person).values(name=''))
-        if mode=='test' and (any(not p.user_id.startswith('test-') for p in roster.counselors+roster.students) or any(not c.class_id.startswith('test-') for c in roster.classes)):
+        if mode=='test' and (any(not p.user_id.startswith('test-') for p in roster.counselors+roster.students)):
             raise RuntimeError('Test mode accepts only test- identities and test- classes')
         sync_directory(db, roster)
         # Additive migration for legacy requests; do not rewrite historical approvals.
@@ -593,6 +621,12 @@ def admin_directory(db:Session=Depends(db_session),user:Person=Depends(current_u
     return {'directory':state.directory,'revision':state.digest}
 
 class DirectoryUpdate(BaseModel):
+    @model_validator(mode='before')
+    @classmethod
+    def require_current_version(cls, data):
+        if isinstance(data,dict) and isinstance(data.get('directory'),dict) and data['directory'].get('version')!=2:
+            raise ValueError('管理页面版本已更新，请刷新后重试')
+        return data
     directory:DirectoryConfig
     revision:str=Field(pattern=r'^[a-f0-9]{64}$')
 
@@ -607,7 +641,7 @@ def save_admin_directory(body:DirectoryUpdate,db:Session=Depends(db_session),use
         except RuntimeError:
             db.rollback();raise HTTPException(409,'已有单一身份不能直接互换；可先配置学生兼辅导员身份') from None
         db.add(DirectoryAudit(id=str(uuid.uuid4()),actor_id=user.id,actor_name=user.name,before_digest=body.revision,after_digest=digest,
-                              counts={'classes':len(data['classes']),'counselors':len(data['counselors']),'students':len(data['students'])},at=datetime.now(timezone.utc).isoformat()))
+                              counts={'classes':len(data['classes']),'counselors':len(body.directory.counselors),'students':len(data['students'])},at=datetime.now(timezone.utc).isoformat()))
         db.commit()
         return {'directory':data,'revision':digest}
     except HTTPException:raise
@@ -616,6 +650,7 @@ def save_admin_directory(body:DirectoryUpdate,db:Session=Depends(db_session),use
         raise HTTPException(503,'名单保存失败，已回滚，请稍后重试') from None
 
 class StudentImportInput(BaseModel):
+    class_id:str=Field(min_length=1,max_length=36)
     text:str=Field(min_length=1,max_length=2_000_000)
     revision:str=Field(pattern=r'^[a-f0-9]{64}$')
 
@@ -623,7 +658,7 @@ def prepare_student_import(body,db,user):
     require_admin(user)
     state=db.get(DirectoryState,1)
     if not state or state.digest!=body.revision:raise HTTPException(409,'名单已变化，请刷新后重新导入')
-    return preview_import(body.text,DirectoryConfig.model_validate(state.directory))
+    return preview_import(body.text,DirectoryConfig.model_validate(state.directory),body.class_id)
 
 @app.post('/api/admin/students/import/preview')
 def student_import_preview(body:StudentImportInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):

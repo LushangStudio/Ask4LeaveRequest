@@ -28,7 +28,7 @@ def main():
         with Session(engine) as db:
             state=db.get(DirectoryState,1)
             if state and state.digest==digest:print('名单已迁入，未作修改');return
-            if state and (not args.replace_empty or any(state.directory[key] for key in ['students','counselors','classes'])):
+            if state and (not args.replace_empty or any(state.directory.get(key,[]) for key in ['students','class_counselors','counselors','classes'])):
                 parser.exit(1,'数据库已有名单，拒绝覆盖；请使用管理员页面管理\n')
             if state:state.directory,state.digest,state.updated=directory,digest,datetime.now(timezone.utc).isoformat()
             else:db.add(DirectoryState(id=1,directory=directory,digest=digest,updated=datetime.now(timezone.utc).isoformat()))

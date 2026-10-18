@@ -13,61 +13,83 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True, str_strip_whitespace=True)
 
 
+def class_uuid(value):
+    from uuid import UUID, uuid5, NAMESPACE_URL
+    try:return str(UUID(value))
+    except ValueError:return str(uuid5(NAMESPACE_URL, 'ask4leave:class:'+value))
+
+
 class CounselorConfig(StrictModel):
     user_id: Identifier
-
-    @model_validator(mode='before')
-    @classmethod
-    def discard_legacy_name(cls, data):
-        if isinstance(data, dict):
-            return {key: value for key, value in data.items() if key != 'name'}
-        return data
 
 
 class StudentConfig(StrictModel):
     user_id: Identifier
-    class_id: Identifier
-    college: Name
     major: Name
-    grade: Annotated[str, Field(min_length=1, max_length=20)]
-
-    @model_validator(mode='before')
-    @classmethod
-    def discard_legacy_name(cls, data):
-        # Read old rosters safely, but never serialize or persist their names.
-        if isinstance(data, dict):
-            return {key: value for key, value in data.items() if key != 'name'}
-        return data
+    class_id: str = Field(pattern=r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 
 
 class ClassConfig(StrictModel):
-    class_id: Identifier
+    class_id: str = Field(pattern=r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
     name: Name
-    counselor_ids: list[Identifier] = Field(min_length=1)
+    grade: Annotated[str, Field(min_length=1, max_length=20)]
+    department: Name
+
+
+class ClassCounselorConfig(StrictModel):
+    class_id: str
+    user_id: Identifier
 
 
 class DirectoryConfig(StrictModel):
-    version: Literal[1]
-    counselors: list[CounselorConfig]
+    version: Literal[2]
     classes: list[ClassConfig]
+    class_counselors: list[ClassCounselorConfig]
     students: list[StudentConfig]
+
+    @property
+    def counselors(self):
+        return [CounselorConfig(user_id=uid) for uid in sorted({r.user_id for r in self.class_counselors})]
+
+    def counselors_for(self, class_id):
+        return [r.user_id for r in self.class_counselors if r.class_id==class_id]
+
+    @model_validator(mode='before')
+    @classmethod
+    def migrate_v1(cls,data):
+        if not isinstance(data,dict) or data.get('version')!=1:return data
+        # Deterministic IDs keep migration/retries and existing references stable.
+        ids={c['class_id']:class_uuid(c['class_id']) for c in data['classes']}
+        known={c['user_id'] for c in data['counselors']}
+        if len(known)!=len(data['counselors']):raise ValueError('辅导员学工号重复')
+        classes=[];relations=[]
+        for group in data['classes']:
+            members=[s for s in data['students'] if s['class_id']==group['class_id']]
+            grades={s['grade'] for s in members};departments={s['college'] for s in members}
+            if len(grades)>1 or len(departments)>1:raise ValueError('旧班级的年级或院系不一致，请先统一旧名单资料')
+            classes.append(dict(class_id=ids[group['class_id']],name=group['name'],
+                grade=next(iter(grades),'待完善'),department=next(iter(departments),'待完善')))
+            for uid in group['counselor_ids']:
+                if uid not in known:raise ValueError('旧班级引用未知辅导员')
+                relations.append(dict(class_id=ids[group['class_id']],user_id=uid))
+        students=[]
+        for student in data['students']:
+            if set(student)-{'user_id','name','class_id','college','major','grade'}:raise ValueError('未知学生字段')
+            if not isinstance(student['class_id'],str) or student['class_id'] not in ids:raise ValueError('学生引用未知班级')
+            students.append(dict(user_id=student['user_id'],major=student['major'],class_id=ids[student['class_id']]))
+        return dict(version=2,classes=classes,class_counselors=relations,students=students)
 
     @model_validator(mode='after')
     def check_relationships(self):
-        for members in (self.counselors,self.students):
-            ids=[p.user_id for p in members]
-            if len(ids)!=len(set(ids)):raise ValueError('同一角色中的学工号不得重复')
-        counselors = {p.user_id for p in self.counselors}
-        classes = {c.class_id for c in self.classes}
-        if len(classes) != len(self.classes):
-            raise ValueError('班级编号不得重复')
-        for group in self.classes:
-            if len(set(group.counselor_ids)) != len(group.counselor_ids):
-                raise ValueError('同一班级的辅导员不得重复')
-            if not set(group.counselor_ids) <= counselors:
-                raise ValueError('班级引用了未配置的辅导员')
-        if any(p.class_id not in classes for p in self.students):
-            raise ValueError('学生引用了未配置的班级')
+        classes={c.class_id for c in self.classes}
+        if len(classes)!=len(self.classes):raise ValueError('班级重复')
+        students=[s.user_id for s in self.students]
+        if len(students)!=len(set(students)):raise ValueError('学号重复')
+        relations=[(r.class_id,r.user_id) for r in self.class_counselors]
+        if len(relations)!=len(set(relations)):raise ValueError('班级辅导员关系重复')
+        if any(r.class_id not in classes for r in self.class_counselors):raise ValueError('辅导员关系引用未知班级')
+        if any(not self.counselors_for(c) for c in classes):raise ValueError('班级至少需要一位辅导员')
+        if any(s.class_id not in classes for s in self.students):raise ValueError('学生引用未知班级')
         return self
 
 
@@ -92,10 +114,10 @@ def read_directories(path: str, test_path: str | None = None) -> DirectoryConfig
     return merge_directories(base,test)
 
 def merge_directories(base: DirectoryConfig,test: DirectoryConfig) -> DirectoryConfig:
-    if any(not p.user_id.startswith('test-') for p in test.counselors+test.students) or any(not c.class_id.startswith('test-') for c in test.classes):
+    if any(not p.user_id.startswith('test-') for p in test.counselors+test.students):
         raise ValueError('附加测试名单只接受 test- 身份与班级')
-    return DirectoryConfig.model_validate({'version':1,
-        'counselors':[p.model_dump() for p in base.counselors+test.counselors],
+    return DirectoryConfig.model_validate({'version':2,
+        'class_counselors':[p.model_dump() for p in base.class_counselors+test.class_counselors],
         'classes':[p.model_dump() for p in base.classes+test.classes],
         'students':[p.model_dump() for p in base.students+test.students]})
 

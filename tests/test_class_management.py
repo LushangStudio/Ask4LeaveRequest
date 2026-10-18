@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine,select,func
 from sqlalchemy.orm import Session
 from app import main as m
+from app.directory import class_uuid
 from test_workflow import login, payload
 from test_uis_auth import production,begin,finish
 
@@ -45,20 +46,20 @@ def test_only_configured_admin_can_access_directory(admin_client):
 def test_create_edit_remove_and_restart_persistence(admin_client):
     c,path=admin_client;login(c,'admin-only')
     state=c.get('/api/admin/directory').json();data=state['directory']
-    data['counselors'].append({'user_id':'staff-new'})
-    data['classes'].append({'class_id':'new-class','name':'新班级','counselor_ids':['staff-new']})
-    data['students'].append({'user_id':'student-new','class_id':'new-class','college':'管理学院','major':'测试专业','grade':'2026'})
+    data['class_counselors'].append({'class_id':class_uuid('new-class'),'user_id':'staff-new'})
+    data['classes'].append({'class_id':class_uuid('new-class'),'name':'新班级','grade':'2026','department':'管理学院'})
+    data['students'].append({'user_id':'student-new','class_id':class_uuid('new-class'),'major':'测试专业'})
     saved=c.post('/api/admin/directory',json=state)
     assert saved.status_code==200,saved.text
     with Session(m.engine) as db:assert db.get(m.DirectoryState,1).directory==data
     path.unlink() # Retired fixture files cannot reset the saved database after restart.
-    login(c,'student-new');assert c.get('/api/me').json()['profile']['class_id']=='new-class'
+    login(c,'student-new');assert c.get('/api/me').json()['profile']['class_id']==class_uuid('new-class')
     login(c,'admin-only');edited=saved.json()
     edited['directory']['students'][-1]['major']='更新专业'
     edited['directory']['classes'][-1]['name']='更新班级'
     edited=c.post('/api/admin/directory',json=edited).json()
     removed=copy.deepcopy(edited)
-    for key in ['students','classes','counselors']:removed['directory'][key].pop()
+    for key in ['students','classes','class_counselors']:removed['directory'][key].pop()
     assert c.post('/api/admin/directory',json=removed).status_code==200
     assert c.post('/api/demo/login',json={'person_id':'student-new'}).status_code==400
     with TestClient(m.app) as restarted:
@@ -78,7 +79,7 @@ def test_stale_revision_and_invalid_references_preserve_roster(admin_client):
     assert c.post('/api/admin/directory',json=changed).status_code==200
     assert c.post('/api/admin/directory',json=old).status_code==409
     before=c.get('/api/admin/directory').json();bad=copy.deepcopy(before)
-    bad['directory']['counselors']=[]
+    bad['directory']['class_counselors']=[]
     assert c.post('/api/admin/directory',json=bad).status_code==422
     assert c.get('/api/admin/directory').json()==before
 
@@ -155,7 +156,7 @@ def test_restart_scrubs_legacy_student_names_without_changing_requests(admin_cli
     rid=submit(c)['id']
     with Session(m.engine) as db:
         state=db.get(m.DirectoryState,1)
-        legacy=copy.deepcopy(state.directory)
+        legacy=json.loads((m.ROOT/'config/relationships.example.json').read_text())
         legacy['students'][0]['name']='旧名册姓名'
         state.directory=legacy
         state.digest=m.directory_digest(legacy)
@@ -176,5 +177,5 @@ def test_restart_scrubs_legacy_student_names_without_changing_requests(admin_cli
         assert db.get(m.Person,'student-a').name==''
         assert db.get(m.Person,'retired-student').name==''
         assert db.get(m.Person,'counselor-a').name==''
-        assert all('name' not in c for c in db.get(m.DirectoryState,1).directory['counselors'])
+        assert 'counselors' not in db.get(m.DirectoryState,1).directory
         assert db.get(m.Request,rid).snapshot['name']=='历史申请姓名'

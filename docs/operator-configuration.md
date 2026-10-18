@@ -1,3 +1,5 @@
+> 当前配置格式为 version=2，请以 [班级管理](class-management.md) 为准。下方 version=1 JSON 仅用于旧数据迁移，不再用于新增配置。
+
 # 当前配置方式
 
 班级关系已改为数据库持久化，通过独立管理员页面管理，并支持 CSV 批量导入。生产不再读取关系 JSON。管理员配置、一次性旧名单迁移和上线步骤见 [class-management.md](class-management.md)。下方 JSON 内容仅用于旧文件迁移和本地虚构 fixture 参考。

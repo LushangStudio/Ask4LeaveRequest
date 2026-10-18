@@ -151,8 +151,8 @@ def test_uis_and_test_gate_coexist_and_restart_requires_uis_relogin(production,t
     monkeypatch.setenv('TEST_LOGIN_CONFIG_PATH',str(config))
     with Session(m.engine) as db:
         state=db.get(m.DirectoryState,1);data=dict(state.directory)
-        test=json.loads((m.ROOT/'config/relationships.test.json').read_text())
-        for field in ['students','counselors','classes']:data[field]=data[field]+test[field]
+        test=m.DirectoryConfig.model_validate(json.loads((m.ROOT/'config/relationships.test.json').read_text())).model_dump()
+        for field in ['students','class_counselors','classes']:data[field]=data[field]+test[field]
         state.directory=data;state.digest=m.directory_digest(data);db.commit()
     with TestClient(m.app,base_url='https://app.example',follow_redirects=False) as real:
         assert finish(real,begin(real)).status_code==303
@@ -268,7 +268,7 @@ def test_counselor_uis_name_is_snapshotted_in_approval_and_pdf_only(production):
     assert 'UIS辅导员实名' in ''.join(p.extract_text() for p in PdfReader(io.BytesIO(pdf.content)).pages)
     with Session(m.engine) as db:
         assert db.get(m.Person,'staff-1').name==''
-        assert all('name' not in p for p in db.get(m.DirectoryState,1).directory['counselors'])
+        assert 'counselors' not in db.get(m.DirectoryState,1).directory
     control['user']['user_name']='UIS更新后的辅导员'
     assert finish(c,begin(c)).status_code==303
     assert c.get('/api/me').json()['name']=='UIS更新后的辅导员'
