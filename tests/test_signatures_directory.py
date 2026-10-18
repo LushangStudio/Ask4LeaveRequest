@@ -73,9 +73,9 @@ def test_multiclass_counselor_and_one_final_decision(client):
     assert approve(client,second['id']).status_code==404
     login(client)
     approved=client.get('/api/requests/'+first['id']).json()
-    assert approved['approval']['approver']=='演示辅导员丙'
+    assert approved['approval']['approver']=='counselor-c'
     text=''.join(p.extract_text() for p in PdfReader(io.BytesIO(client.get('/api/documents/'+approved['documents'][0]['id']).content)).pages)
-    assert '演示辅导员丙' in text and '工商管理一班' in text
+    assert 'counselor-c' in text and '工商管理一班' in text
 
 
 @pytest.mark.parametrize('layout,count',[('combined',1),('separate',2)])

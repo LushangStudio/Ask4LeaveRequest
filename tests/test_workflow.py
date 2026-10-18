@@ -69,7 +69,7 @@ def test_full_flow_pdf_and_persistence(client,layout,count):
     for d in result['documents']:
         response=c.get('/api/documents/'+d['id']);assert response.status_code==200
         pdf=PdfReader(io.BytesIO(response.content));texts.append('\n'.join(p.extract_text() for p in pdf.pages))
-        assert 'student-a' in texts[-1] and '演示辅导员甲' in texts[-1]
+        assert 'student-a' in texts[-1] and 'counselor-a' in texts[-1]
         assert '非正式凭证' in texts[-1]
     assert '组织行为学' in ''.join(texts) and '志愿者活动' in ''.join(texts)
     if count==2: assert '志愿者活动' not in texts[0] and '组织行为学' not in texts[1]

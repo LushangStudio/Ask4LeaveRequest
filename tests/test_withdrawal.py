@@ -42,7 +42,7 @@ def test_counselor_revocation_retains_audit_and_disables_documents(client):
     row=client.post(f'/api/requests/{rid}/withdraw',json={'reason':'审批有误'}).json()
     assert row['status']=='revoked' and row['documents']==[]
     assert row['approval']==before['approval']
-    assert row['withdrawal']['actor']=='演示辅导员丙'
+    assert row['withdrawal']['actor']=='counselor-c'
     for person in ['student-a','counselor-a','counselor-c']:
         login(client,person)
         assert client.get('/api/requests/'+rid).json()['status']=='revoked'

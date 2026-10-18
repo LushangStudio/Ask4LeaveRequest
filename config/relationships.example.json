@@ -2,16 +2,13 @@
   "version": 1,
   "counselors": [
     {
-      "user_id": "counselor-a",
-      "name": "演示辅导员甲"
+      "user_id": "counselor-a"
     },
     {
-      "user_id": "counselor-b",
-      "name": "演示辅导员乙"
+      "user_id": "counselor-b"
     },
     {
-      "user_id": "counselor-c",
-      "name": "演示辅导员丙"
+      "user_id": "counselor-c"
     }
   ],
   "classes": [

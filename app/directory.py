@@ -15,7 +15,13 @@ class StrictModel(BaseModel):
 
 class CounselorConfig(StrictModel):
     user_id: Identifier
-    name: Name
+
+    @model_validator(mode='before')
+    @classmethod
+    def discard_legacy_name(cls, data):
+        if isinstance(data, dict):
+            return {key: value for key, value in data.items() if key != 'name'}
+        return data
 
 
 class StudentConfig(StrictModel):

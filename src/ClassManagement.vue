@@ -60,7 +60,7 @@ function add() {
     active.value === "classes"
       ? { class_id: "", name: "", counselor_ids: [], counselor_ids_text: "" }
       : active.value === "counselors"
-        ? { user_id: "", name: "" }
+        ? { user_id: "" }
         : {
             user_id: "",
             class_id: directory.value.classes[0]?.class_id || "",
@@ -80,9 +80,8 @@ async function save() {
   status.value = "";
   const payload = {
     version: 1,
-    counselors: directory.value.counselors.map(({ user_id, name }) => ({
+    counselors: directory.value.counselors.map(({ user_id }) => ({
       user_id,
-      name,
     })),
     classes: directory.value.classes.map(
       ({ class_id, name, counselor_ids_text }) => ({
@@ -255,7 +254,7 @@ onMounted(async () => {
               {{
                 active === "classes"
                   ? "班级编号及学工号使用字母、数字、下划线或连字符；多个辅导员工号用英文逗号分隔。"
-                  : "学工号必须与UIS一致。兼任学生和辅导员时，两处填写相同学工号；学生姓名从UIS登录获取。"
+                  : "学工号必须与UIS一致。兼任学生和辅导员时，两处填写相同学工号；师生姓名均从UIS登录获取。"
               }}
             </p>
             <div
@@ -290,12 +289,7 @@ onMounted(async () => {
               ></template>
               <div v-else-if="active === 'counselors'" class="two">
                 <label
-                  >工号<input
-                    v-model="row.user_id"
-                    required
-                    maxlength="40" /></label
-                ><label
-                  >姓名<input v-model="row.name" required maxlength="80"
+                  >工号<input v-model="row.user_id" required maxlength="40"
                 /></label>
               </div>
               <template v-else

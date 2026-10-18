@@ -239,3 +239,37 @@ def test_student_name_is_uis_only_and_never_written_to_roster(production):
         assert db.get(m.Request,response.json()['id']).snapshot['name']=='UIS实名同学'
     c.post('/api/logout')
     assert not m.app.state.uis_names
+
+
+def test_counselor_uis_name_is_snapshotted_in_approval_and_pdf_only(production):
+    import io
+    from pypdf import PdfReader
+    from test_workflow import payload,signature_payload,approve
+    c,control,_=production
+    assert finish(c,begin(c)).status_code==303
+    response=c.post('/api/requests',json=payload())
+    assert response.status_code==201
+    rid=response.json()['id']
+    control['user'].update(user_id='staff-1',user_name='UIS辅导员实名',user_type='教职工')
+    assert finish(c,begin(c)).status_code==303
+    assert c.get('/api/me').json()['name']=='UIS辅导员实名'
+    assert c.post('/api/signature',json=signature_payload()).status_code==200
+    result=approve(c,rid)
+    assert result.status_code==200,result.text
+    row=result.json()
+    assert row['approval']['approver']=='UIS辅导员实名'
+    import time
+    deadline=time.monotonic()+10
+    while not row['documents'] and time.monotonic()<deadline:
+        time.sleep(0.05)
+        row=c.get('/api/requests/'+rid).json()
+    assert row['file_status']=='ready',row
+    pdf=c.get('/api/documents/'+row['documents'][0]['id'])
+    assert 'UIS辅导员实名' in ''.join(p.extract_text() for p in PdfReader(io.BytesIO(pdf.content)).pages)
+    with Session(m.engine) as db:
+        assert db.get(m.Person,'staff-1').name==''
+        assert all('name' not in p for p in db.get(m.DirectoryState,1).directory['counselors'])
+    control['user']['user_name']='UIS更新后的辅导员'
+    assert finish(c,begin(c)).status_code==303
+    assert c.get('/api/me').json()['name']=='UIS更新后的辅导员'
+    assert c.get('/api/requests/'+rid).json()['approval']['approver']=='UIS辅导员实名'

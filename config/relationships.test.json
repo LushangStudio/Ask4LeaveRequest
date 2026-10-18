@@ -2,12 +2,10 @@
   "version": 1,
   "counselors": [
     {
-      "user_id": "test-counselor-1",
-      "name": "测试辅导员甲"
+      "user_id": "test-counselor-1"
     },
     {
-      "user_id": "test-counselor-2",
-      "name": "测试辅导员乙"
+      "user_id": "test-counselor-2"
     }
   ],
   "classes": [

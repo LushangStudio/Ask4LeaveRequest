@@ -205,7 +205,7 @@ def sync_directory(db, roster, commit=True):
     classes = {c.class_id:c for c in roster.classes}
     student_ids={s.user_id for s in roster.students}
     counselor_ids={c.user_id for c in roster.counselors}
-    people = [(c.user_id, c.name, 'counselor', None, {}) for c in roster.counselors if c.user_id not in student_ids]
+    people = [(c.user_id, '', 'counselor', None, {}) for c in roster.counselors if c.user_id not in student_ids]
     people += [(s.user_id, '', 'both' if s.user_id in counselor_ids else 'student', classes[s.class_id].counselor_ids[0],
                 {'college': s.college, 'major': s.major, 'grade': s.grade, 'student_number': s.user_id,
                  'class_id':s.class_id,'class_name':classes[s.class_id].name,
@@ -214,8 +214,7 @@ def sync_directory(db, roster, commit=True):
     admins=app.state.admin_ids
     active |= admins
     for pid in admins-student_ids-counselor_ids:
-        existing=db.get(Person,pid)
-        people.append((pid,existing.name if existing else pid,'admin',None,{}))
+        people.append((pid,'','admin',None,{}))
     for pid, name, role, counselor, profile in people:
         person = db.get(Person, pid)
         if person and person.role != role and not {'both','admin'} & {person.role,role}:
@@ -270,8 +269,8 @@ async def lifespan(app):
                 state.directory=sanitized
                 state.digest=directory_digest(sanitized)
                 state.updated=datetime.now(timezone.utc).isoformat()
-        # Also clear retired student directory entries; historical requests stay intact.
-        db.execute(update(Person).where(Person.role.in_(['student','both'])).values(name=''))
+        # Clear names from all directory identities, including retired entries; keep historical snapshots.
+        db.execute(update(Person).values(name=''))
         if mode=='test' and (any(not p.user_id.startswith('test-') for p in roster.counselors+roster.students) or any(not c.class_id.startswith('test-') for c in roster.classes)):
             raise RuntimeError('Test mode accepts only test- identities and test- classes')
         sync_directory(db, roster)
@@ -308,14 +307,12 @@ def current_user(leave_session: str | None = Cookie(default=None), db:Session=De
     elif os.getenv('APP_MODE')=='production' and not db.get(UISLoginSession,login.token_hash):
         raise HTTPException(401,'请使用复旦UIS重新登录')
     person=db.get(Person, login.person_id)
-    name=person.name
+    name=person.id
     if db.get(UISLoginSession,login.token_hash):
         cached=app.state.uis_names.get(login.token_hash)
         if not cached:
             raise HTTPException(401,'姓名会话已过期，请重新使用UIS登录')
         name=cached[0]
-    elif has_role(person,'student'):
-        name=person.id  # Local demo/test identities are explicitly synthetic.
     # A detached identity prevents the UIS display name being flushed into people.
     return SimpleNamespace(id=person.id,name=name,role=person.role,counselor=person.counselor,profile=person.profile)
 
@@ -441,7 +438,6 @@ async def uis_callback(code:str,state:str|None=None,leave_oauth_state:str|None=C
     # No undergraduate/type allowlist: the operator roster alone determines application roles.
     person=db.get(Person,user.user_id)
     if not person or not db.get(DirectoryMember,user.user_id):raise HTTPException(403,'尚未配置班级或辅导员关系，请联系管理员')
-    if person.role=='admin':person.name=user.user_name[:80];db.commit()
     response=RedirectResponse(settings.frontend_url,status_code=303)
     establish_login(db,user.user_id,response,leave_session,uis_type=user.user_type,uis_name=user.user_name)
     response.delete_cookie('leave_oauth_state',path=uis_state_cookie_path(),secure=cookie_secure(),httponly=True,samesite='lax')

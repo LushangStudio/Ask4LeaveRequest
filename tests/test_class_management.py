@@ -45,7 +45,7 @@ def test_only_configured_admin_can_access_directory(admin_client):
 def test_create_edit_remove_and_restart_persistence(admin_client):
     c,path=admin_client;login(c,'admin-only')
     state=c.get('/api/admin/directory').json();data=state['directory']
-    data['counselors'].append({'user_id':'staff-new','name':'新老师'})
+    data['counselors'].append({'user_id':'staff-new'})
     data['classes'].append({'class_id':'new-class','name':'新班级','counselor_ids':['staff-new']})
     data['students'].append({'user_id':'student-new','class_id':'new-class','college':'管理学院','major':'测试专业','grade':'2026'})
     saved=c.post('/api/admin/directory',json=state)
@@ -160,6 +160,10 @@ def test_restart_scrubs_legacy_student_names_without_changing_requests(admin_cli
         state.directory=legacy
         state.digest=m.directory_digest(legacy)
         db.get(m.Person,'student-a').name='旧名册姓名'
+        legacy['counselors'][0]['name']='旧辅导员姓名'
+        state.directory=copy.deepcopy(legacy)
+        state.digest=m.directory_digest(legacy)
+        db.get(m.Person,'counselor-a').name='旧辅导员姓名'
         db.add(m.Person(id='retired-student',name='停用学生姓名',role='student',profile={}))
         db.get(m.Request,rid).snapshot={**db.get(m.Request,rid).snapshot,'name':'历史申请姓名'}
         db.commit()
@@ -171,4 +175,6 @@ def test_restart_scrubs_legacy_student_names_without_changing_requests(admin_cli
     with Session(m.engine) as db:
         assert db.get(m.Person,'student-a').name==''
         assert db.get(m.Person,'retired-student').name==''
+        assert db.get(m.Person,'counselor-a').name==''
+        assert all('name' not in c for c in db.get(m.DirectoryState,1).directory['counselors'])
         assert db.get(m.Request,rid).snapshot['name']=='历史申请姓名'
