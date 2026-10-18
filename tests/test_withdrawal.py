@@ -15,7 +15,7 @@ def test_student_withdrawal_is_visible_and_terminal(client):
     body={'reason':'计划取消'}
     row=client.post(f'/api/requests/{rid}/withdraw',json=body).json()
     assert row['status']=='withdrawn' and row['file_status']=='cancelled'
-    assert row['withdrawal']['actor']=='演示学生甲' and row['documents']==[]
+    assert row['withdrawal']['actor']=='student-a' and row['documents']==[]
     assert client.post(f'/api/requests/{rid}/withdraw',json=body).json()==row
     for person in ['student-a','counselor-a','counselor-c']:
         login(client,person)

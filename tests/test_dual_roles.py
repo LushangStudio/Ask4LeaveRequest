@@ -7,7 +7,7 @@ from test_workflow import client, login, submit, approve, signature_payload
 
 def dual_roster():
     data=json.loads((m.ROOT/'config/relationships.example.json').read_text())
-    data['counselors'].append({'user_id':'student-a','name':'演示学生甲'})
+    data['counselors'].append({'user_id':'student-a','name':'student-a'})
     for group in data['classes']:group['counselor_ids'].append('student-a')
     return DirectoryConfig.model_validate(data)
 
@@ -23,7 +23,7 @@ def test_self_counselor_can_submit_approve_and_revoke(client):
     assert {r['id'] for r in client.get('/api/requests?view=counselor').json()}=={rid}
     assert client.post('/api/signature',json=signature_payload()).status_code==200
     row=approve(client,rid).json()
-    assert row['status']=='approved' and row['approval']['approver']=='演示学生甲'
+    assert row['status']=='approved' and row['approval']['approver']=='student-a'
     assert client.post(f'/api/requests/{rid}/withdraw',json={'role':'student'}).status_code==409
     assert client.post(f'/api/requests/{rid}/withdraw',json={'role':'counselor'}).json()['status']=='revoked'
 

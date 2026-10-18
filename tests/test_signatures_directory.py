@@ -22,7 +22,7 @@ def roster_payload():
     return json.loads((m.ROOT/'config/relationships.example.json').read_text())
 
 
-@pytest.mark.parametrize('invalid', ['duplicate_student','duplicate_class','duplicate_counselor','unknown_class','unknown_counselor','no_counselor','blank_id','role_collision','multiple_classes','unknown_field'])
+@pytest.mark.parametrize('invalid', ['duplicate_student','duplicate_class','duplicate_counselor','unknown_class','unknown_counselor','no_counselor','blank_id','multiple_classes','unknown_field'])
 def test_operator_config_rejects_invalid_relationships(invalid):
     data=roster_payload()
     if invalid=='duplicate_student': data['students'].append(copy.deepcopy(data['students'][0]))
@@ -32,7 +32,6 @@ def test_operator_config_rejects_invalid_relationships(invalid):
     elif invalid=='unknown_counselor':data['classes'][0]['counselor_ids']=['missing']
     elif invalid=='no_counselor':data['classes'][0]['counselor_ids']=[]
     elif invalid=='blank_id':data['students'][0]['user_id']='   '
-    elif invalid=='role_collision':data['students'][0]['user_id']='counselor-a'
     elif invalid=='multiple_classes':data['students'][0]['class_id']=['class-a','class-b']
     elif invalid=='unknown_field':data['students'][0]['counselor_id']='counselor-a'
     with pytest.raises(ValidationError):DirectoryConfig.model_validate(data)
@@ -91,7 +90,7 @@ def test_preview_requires_signature_has_watermark_and_no_side_effects(client,lay
     assert client.post(f'/api/requests/{rid}/decision',json={'outcome':'approved'}).status_code==409
     preview=client.post(f'/api/requests/{rid}/preview',json={'opinion':'已核对'}).json()
     assert preview['count']==count
-    assert preview['watermark']=='演示学生甲-2026-10-01-3天'
+    assert preview['watermark']=='student-a-2026-10-01-3天'
     for index in range(count):
         response=client.get(f"/api/previews/{preview['id']}/{index}")
         assert response.status_code==200
@@ -193,7 +192,7 @@ def test_operator_removal_revokes_existing_session_and_preserves_history(client)
     assert client.get('/api/me').status_code==403
     assert client.post('/api/demo/login',json={'person_id':'student-a'}).status_code==400
     with Session(m.engine) as db:
-        assert db.get(m.Person,'student-a') and db.get(m.Request,rid).snapshot['name']=='演示学生甲'
+        assert db.get(m.Person,'student-a') and db.get(m.Request,rid).snapshot['name']=='student-a'
 
 
 def test_retired_invalid_json_cannot_reset_database_directory(client,tmp_path,monkeypatch):

@@ -1,20 +1,28 @@
 {
   "version": 1,
   "counselors": [
-    { "user_id": "test-counselor-1", "name": "测试辅导员甲" },
-    { "user_id": "test-counselor-2", "name": "测试辅导员乙" }
+    {
+      "user_id": "test-counselor-1",
+      "name": "测试辅导员甲"
+    },
+    {
+      "user_id": "test-counselor-2",
+      "name": "测试辅导员乙"
+    }
   ],
   "classes": [
     {
       "class_id": "test-class",
       "name": "test 测试班级",
-      "counselor_ids": ["test-counselor-1", "test-counselor-2"]
+      "counselor_ids": [
+        "test-counselor-1",
+        "test-counselor-2"
+      ]
     }
   ],
   "students": [
     {
       "user_id": "test-123",
-      "name": "测试学生甲",
       "class_id": "test-class",
       "college": "测试学院",
       "major": "测试专业",
@@ -22,7 +30,6 @@
     },
     {
       "user_id": "test-124",
-      "name": "测试学生乙",
       "class_id": "test-class",
       "college": "测试学院",
       "major": "测试专业",
@@ -30,7 +37,6 @@
     },
     {
       "user_id": "test-125",
-      "name": "测试学生丙",
       "class_id": "test-class",
       "college": "测试学院",
       "major": "测试专业",

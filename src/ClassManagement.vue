@@ -23,7 +23,6 @@ const dirty = computed(
 const workspaceUrl = new URL("../", window.location.href).href;
 const studentFields = {
   user_id: "学号",
-  name: "姓名",
   college: "学院",
   major: "专业",
   grade: "年级",
@@ -64,7 +63,6 @@ function add() {
         ? { user_id: "", name: "" }
         : {
             user_id: "",
-            name: "",
             class_id: directory.value.classes[0]?.class_id || "",
             college: "",
             major: "",
@@ -97,9 +95,8 @@ async function save() {
       }),
     ),
     students: directory.value.students.map(
-      ({ user_id, name, class_id, college, major, grade }) => ({
+      ({ user_id, class_id, college, major, grade }) => ({
         user_id,
-        name,
         class_id,
         college,
         major,
@@ -236,13 +233,13 @@ onMounted(async () => {
             <section v-if="active === 'students'" class="item">
               <h3>批量导入学生</h3>
               <p class="caption">
-                每行一人：学号,姓名,班级,学院,专业,年级。班级填写已有班级编号或唯一名称，使用英文逗号；同学号更新资料。先保存当前编辑，再导入。
+                每行一人：学号,班级,学院,专业,年级。班级填写已有班级编号或唯一名称，使用英文逗号；同学号更新资料。先保存当前编辑，再导入。
               </p>
               <label
                 >学生批量名单<textarea
                   v-model="importText"
                   rows="6"
-                  placeholder="STUDENT001,王同学,class-2026-a,管理学院,工商管理,2026"
+                  placeholder="STUDENT001,class-2026-a,管理学院,工商管理,2026"
                   @input="importPreview = null"
                 ></textarea>
               </label>
@@ -258,7 +255,7 @@ onMounted(async () => {
               {{
                 active === "classes"
                   ? "班级编号及学工号使用字母、数字、下划线或连字符；多个辅导员工号用英文逗号分隔。"
-                  : "学工号必须与UIS一致。兼任学生和辅导员时，两处填写相同学工号和姓名。"
+                  : "学工号必须与UIS一致。兼任学生和辅导员时，两处填写相同学工号；学生姓名从UIS登录获取。"
               }}
             </p>
             <div
@@ -392,7 +389,6 @@ onMounted(async () => {
               <thead>
                 <tr>
                   <th>学号</th>
-                  <th>姓名</th>
                   <th>班级</th>
                   <th>学院</th>
                   <th>专业</th>
@@ -405,7 +401,6 @@ onMounted(async () => {
                   :key="student.user_id"
                 >
                   <td>{{ student.user_id }}</td>
-                  <td>{{ student.name }}</td>
                   <td>{{ student.class_id }}</td>
                   <td>{{ student.college }}</td>
                   <td>{{ student.major }}</td>

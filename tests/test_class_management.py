@@ -47,14 +47,14 @@ def test_create_edit_remove_and_restart_persistence(admin_client):
     state=c.get('/api/admin/directory').json();data=state['directory']
     data['counselors'].append({'user_id':'staff-new','name':'新老师'})
     data['classes'].append({'class_id':'new-class','name':'新班级','counselor_ids':['staff-new']})
-    data['students'].append({'user_id':'student-new','name':'新同学','class_id':'new-class','college':'管理学院','major':'测试专业','grade':'2026'})
+    data['students'].append({'user_id':'student-new','class_id':'new-class','college':'管理学院','major':'测试专业','grade':'2026'})
     saved=c.post('/api/admin/directory',json=state)
     assert saved.status_code==200,saved.text
     with Session(m.engine) as db:assert db.get(m.DirectoryState,1).directory==data
     path.unlink() # Retired fixture files cannot reset the saved database after restart.
     login(c,'student-new');assert c.get('/api/me').json()['profile']['class_id']=='new-class'
     login(c,'admin-only');edited=saved.json()
-    edited['directory']['students'][-1]['name']='更新姓名'
+    edited['directory']['students'][-1]['major']='更新专业'
     edited['directory']['classes'][-1]['name']='更新班级'
     edited=c.post('/api/admin/directory',json=edited).json()
     removed=copy.deepcopy(edited)
@@ -86,7 +86,7 @@ def test_stale_revision_and_invalid_references_preserve_roster(admin_client):
 def test_save_failure_rolls_back_directory_and_people(admin_client,monkeypatch):
     c,path=admin_client;login(c,'student-a')
     before=c.get('/api/admin/directory').json();state=copy.deepcopy(before)
-    state['directory']['students'][0]['name']='不能生效的名字'
+    state['directory']['students'][0]['major']='不能生效的专业'
     real_commit=Session.commit
     def fail_commit(db):
         if any(isinstance(x,m.DirectoryAudit) for x in db.new):raise RuntimeError('simulated DB commit failure')
@@ -95,7 +95,7 @@ def test_save_failure_rolls_back_directory_and_people(admin_client,monkeypatch):
     assert c.post('/api/admin/directory',json=state).status_code==503
     assert c.get('/api/admin/directory').json()==before
     with Session(m.engine) as db:
-        assert db.get(m.Person,'student-a').name=='演示学生甲'
+        assert db.get(m.Person,'student-a').name==''
         assert db.scalar(select(func.count()).select_from(m.DirectoryAudit))==0
 
 
@@ -146,3 +146,29 @@ def test_production_ignores_relationship_files_after_restart(production,tmp_path
     with TestClient(m.app,base_url='https://app.example',follow_redirects=False) as restarted:
         assert finish(restarted,begin(restarted)).status_code==303
         assert restarted.get('/api/me').json()['id']=='01234567890'
+
+
+def test_restart_scrubs_legacy_student_names_without_changing_requests(admin_client):
+    from test_workflow import submit
+    c,_=admin_client
+    login(c,'student-a')
+    rid=submit(c)['id']
+    with Session(m.engine) as db:
+        state=db.get(m.DirectoryState,1)
+        legacy=copy.deepcopy(state.directory)
+        legacy['students'][0]['name']='旧名册姓名'
+        state.directory=legacy
+        state.digest=m.directory_digest(legacy)
+        db.get(m.Person,'student-a').name='旧名册姓名'
+        db.add(m.Person(id='retired-student',name='停用学生姓名',role='student',profile={}))
+        db.get(m.Request,rid).snapshot={**db.get(m.Request,rid).snapshot,'name':'历史申请姓名'}
+        db.commit()
+    with TestClient(m.app) as restarted:
+        login(restarted,'admin-only')
+        data=restarted.get('/api/admin/directory').json()
+        assert all('name' not in s for s in data['directory']['students'])
+        assert data['revision']==m.directory_digest(data['directory'])
+    with Session(m.engine) as db:
+        assert db.get(m.Person,'student-a').name==''
+        assert db.get(m.Person,'retired-student').name==''
+        assert db.get(m.Request,rid).snapshot['name']=='历史申请姓名'

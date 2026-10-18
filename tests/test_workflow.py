@@ -69,7 +69,7 @@ def test_full_flow_pdf_and_persistence(client,layout,count):
     for d in result['documents']:
         response=c.get('/api/documents/'+d['id']);assert response.status_code==200
         pdf=PdfReader(io.BytesIO(response.content));texts.append('\n'.join(p.extract_text() for p in pdf.pages))
-        assert '演示学生甲' in texts[-1] and '演示辅导员甲' in texts[-1]
+        assert 'student-a' in texts[-1] and '演示辅导员甲' in texts[-1]
         assert '非正式凭证' in texts[-1]
     assert '组织行为学' in ''.join(texts) and '志愿者活动' in ''.join(texts)
     if count==2: assert '志愿者活动' not in texts[0] and '组织行为学' not in texts[1]
@@ -125,7 +125,7 @@ def test_immutable_snapshot_and_long_text(client):
     login(c,'counselor-a');result=approve(c,rid).json();assert result['file_status']=='ready'
     pdf=PdfReader(io.BytesIO(c.get('/api/documents/'+result['documents'][0]['id']).content))
     text=''.join(p.extract_text() for p in pdf.pages)
-    assert '修改后的姓名' not in text and '演示学生甲' in text
+    assert '修改后的姓名' not in text and 'student-a' in text
     assert len(pdf.pages)>1 and '志愿者活动' in text
 
 def test_logout_and_production_guard(client,monkeypatch):

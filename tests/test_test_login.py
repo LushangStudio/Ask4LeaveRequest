@@ -162,7 +162,7 @@ def test_full_test_class_workflow_and_student_isolation(test_client):
     enter(c,key,'test-123')
     pdf=PdfReader(io.BytesIO(c.get('/api/documents/'+result['documents'][0]['id']).content))
     text=''.join(page.extract_text() for page in pdf.pages)
-    assert '测试学生甲' in text and '测试辅导员乙' in text
+    assert 'test-123' in text and '测试辅导员乙' in text
     assert c.post('/api/logout').status_code==200
     assert c.get('/api/me').status_code==401
     with Session(m.engine) as db:

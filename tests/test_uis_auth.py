@@ -144,7 +144,7 @@ def test_production_rejects_ordinary_demo_session(production):
     assert c.get('/api/me').status_code==401
 
 
-def test_uis_and_test_gate_can_coexist_without_revoking_real_session(production,tmp_path):
+def test_uis_and_test_gate_coexist_and_restart_requires_uis_relogin(production,tmp_path):
     c,_,monkeypatch=production
     key=secrets.token_urlsafe(32)
     config=tmp_path/'gate.json';config.write_text(json.dumps({'enabled':True,'secret':key}))
@@ -163,9 +163,12 @@ def test_uis_and_test_gate_can_coexist_without_revoking_real_session(production,
         config.write_text(json.dumps({'enabled':False,'secret':key}))
         with TestClient(m.app,base_url='https://app.example',follow_redirects=False) as restarted:
             restarted.cookies.update(dict(real.cookies))
+            assert restarted.get('/api/me').status_code==401
+            assert finish(restarted,begin(restarted)).status_code==303
             assert restarted.get('/api/me').status_code==200
             assert restarted.get('/?'+urlencode({'secret':key,'uid':'test-123'})).status_code==403
-            restarted.cookies.update(dict(test.cookies))
+            restarted.cookies.clear()
+            restarted.cookies.update(test.cookies)
             assert restarted.get('/api/me').status_code==401
 
 
@@ -209,3 +212,30 @@ def test_forged_shared_callback_prefix_cannot_authenticate(production):
     begin(c)
     result=finish(c,'ask4leave.'+secrets.token_urlsafe(32))
     assert result.status_code==400 and control['calls']==[]
+
+
+def test_student_name_is_uis_only_and_never_written_to_roster(production):
+    from test_workflow import payload
+    c,control,_=production
+    control['user']['user_name']='UIS实名同学'
+    assert finish(c,begin(c)).status_code==303
+    assert c.get('/api/me').json()['name']=='UIS实名同学'
+    response=c.post('/api/requests',json=payload())
+    assert response.status_code==201,response.text
+    with Session(m.engine) as db:
+        state=db.get(m.DirectoryState,1)
+        assert all('name' not in student for student in state.directory['students'])
+        assert state.digest==m.directory_digest(state.directory)
+        assert db.get(m.Person,'01234567890').name==''
+        assert db.get(m.Request,response.json()['id']).snapshot['name']=='UIS实名同学'
+    # No silent fallback to a blank/name from the roster after cache loss/restart.
+    m.app.state.uis_names.clear()
+    assert c.get('/api/me').status_code==401
+    control['user']['user_name']='UIS更新姓名'
+    assert finish(c,begin(c)).status_code==303
+    assert c.get('/api/me').json()['name']=='UIS更新姓名'
+    with Session(m.engine) as db:
+        assert db.get(m.Person,'01234567890').name==''
+        assert db.get(m.Request,response.json()['id']).snapshot['name']=='UIS实名同学'
+    c.post('/api/logout')
+    assert not m.app.state.uis_names

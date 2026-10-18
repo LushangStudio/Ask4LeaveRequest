@@ -1,18 +1,40 @@
 {
   "version": 1,
   "counselors": [
-    { "user_id": "counselor-a", "name": "演示辅导员甲" },
-    { "user_id": "counselor-b", "name": "演示辅导员乙" },
-    { "user_id": "counselor-c", "name": "演示辅导员丙" }
+    {
+      "user_id": "counselor-a",
+      "name": "演示辅导员甲"
+    },
+    {
+      "user_id": "counselor-b",
+      "name": "演示辅导员乙"
+    },
+    {
+      "user_id": "counselor-c",
+      "name": "演示辅导员丙"
+    }
   ],
   "classes": [
-    { "class_id": "class-a", "name": "2026 级工商管理一班", "counselor_ids": ["counselor-a", "counselor-c"] },
-    { "class_id": "class-b", "name": "2026 级管理科学一班", "counselor_ids": ["counselor-b", "counselor-c"] }
+    {
+      "class_id": "class-a",
+      "name": "2026 级工商管理一班",
+      "counselor_ids": [
+        "counselor-a",
+        "counselor-c"
+      ]
+    },
+    {
+      "class_id": "class-b",
+      "name": "2026 级管理科学一班",
+      "counselor_ids": [
+        "counselor-b",
+        "counselor-c"
+      ]
+    }
   ],
   "students": [
     {
       "user_id": "student-a",
-      "name": "演示学生甲",
       "class_id": "class-a",
       "college": "管理学院",
       "major": "工商管理",
@@ -20,7 +42,6 @@
     },
     {
       "user_id": "student-b",
-      "name": "演示学生乙",
       "class_id": "class-b",
       "college": "管理学院",
       "major": "管理科学",

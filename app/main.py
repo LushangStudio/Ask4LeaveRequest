@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from typing import Literal
+from types import SimpleNamespace
 from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit
@@ -205,7 +206,7 @@ def sync_directory(db, roster, commit=True):
     student_ids={s.user_id for s in roster.students}
     counselor_ids={c.user_id for c in roster.counselors}
     people = [(c.user_id, c.name, 'counselor', None, {}) for c in roster.counselors if c.user_id not in student_ids]
-    people += [(s.user_id, s.name, 'both' if s.user_id in counselor_ids else 'student', classes[s.class_id].counselor_ids[0],
+    people += [(s.user_id, '', 'both' if s.user_id in counselor_ids else 'student', classes[s.class_id].counselor_ids[0],
                 {'college': s.college, 'major': s.major, 'grade': s.grade, 'student_number': s.user_id,
                  'class_id':s.class_id,'class_name':classes[s.class_id].name,
                  'counselor_ids':classes[s.class_id].counselor_ids}) for s in roster.students]
@@ -249,6 +250,7 @@ async def lifespan(app):
         raise RuntimeError('Invalid session cookie / application base path')
     app.state.test_login_config=test_config
     app.state.uis_settings=uis
+    app.state.uis_names={}
     Base.metadata.create_all(engine)
     with Session(engine) as db:
         state=db.get(DirectoryState,1)
@@ -261,7 +263,15 @@ async def lifespan(app):
                 except Exception:raise RuntimeError('Invalid local fixture directory configuration') from None
             data=roster.model_dump()
             state=DirectoryState(id=1,directory=data,digest=directory_digest(data),updated=datetime.now(timezone.utc).isoformat());db.add(state)
-        else:roster=DirectoryConfig.model_validate(state.directory)
+        else:
+            roster=DirectoryConfig.model_validate(state.directory)
+            sanitized=roster.model_dump()
+            if sanitized != state.directory:
+                state.directory=sanitized
+                state.digest=directory_digest(sanitized)
+                state.updated=datetime.now(timezone.utc).isoformat()
+        # Also clear retired student directory entries; historical requests stay intact.
+        db.execute(update(Person).where(Person.role.in_(['student','both'])).values(name=''))
         if mode=='test' and (any(not p.user_id.startswith('test-') for p in roster.counselors+roster.students) or any(not c.class_id.startswith('test-') for c in roster.classes)):
             raise RuntimeError('Test mode accepts only test- identities and test- classes')
         sync_directory(db, roster)
@@ -297,13 +307,24 @@ def current_user(leave_session: str | None = Cookie(default=None), db:Session=De
             raise HTTPException(401,'测试登录已关闭或已失效，请重新登录')
     elif os.getenv('APP_MODE')=='production' and not db.get(UISLoginSession,login.token_hash):
         raise HTTPException(401,'请使用复旦UIS重新登录')
-    return db.get(Person, login.person_id)
+    person=db.get(Person, login.person_id)
+    name=person.name
+    if db.get(UISLoginSession,login.token_hash):
+        cached=app.state.uis_names.get(login.token_hash)
+        if not cached:
+            raise HTTPException(401,'姓名会话已过期，请重新使用UIS登录')
+        name=cached[0]
+    elif has_role(person,'student'):
+        name=person.id  # Local demo/test identities are explicitly synthetic.
+    # A detached identity prevents the UIS display name being flushed into people.
+    return SimpleNamespace(id=person.id,name=name,role=person.role,counselor=person.counselor,profile=person.profile)
 
 def cookie_secure():
     return os.getenv('APP_MODE')=='production' or os.getenv('SESSION_COOKIE_SECURE','false').lower()=='true'
 
 def remove_login(db,token):
     digest=hashlib.sha256((token or '').encode()).hexdigest()
+    app.state.uis_names.pop(digest,None)
     old=db.get(Login,digest)
     if old:
         for model in [TestLoginSession,UISLoginSession]:
@@ -311,7 +332,7 @@ def remove_login(db,token):
             if tag:db.delete(tag)
         db.flush();db.delete(old)
 
-def establish_login(db, person_id, response, old_token=None, test_digest=None,uis_type=None):
+def establish_login(db, person_id, response, old_token=None, test_digest=None,uis_type=None,uis_name=None):
     remove_login(db,old_token)
     token=secrets.token_urlsafe(32)
     digest=hashlib.sha256(token.encode()).hexdigest()
@@ -321,6 +342,10 @@ def establish_login(db, person_id, response, old_token=None, test_digest=None,ui
     if test_digest:db.add(TestLoginSession(token_hash=digest,secret_digest=test_digest))
     if uis_type is not None:db.add(UISLoginSession(token_hash=digest,user_type=uis_type[:80]))
     db.commit()
+    if uis_name is not None:
+        now=datetime.now(timezone.utc).replace(tzinfo=None)
+        app.state.uis_names={key:value for key,value in app.state.uis_names.items() if value[1]>now}
+        app.state.uis_names[digest]=(uis_name[:80],now+timedelta(seconds=ttl))
     response.set_cookie('leave_session',token,httponly=True,samesite='strict',max_age=ttl,
                         secure=cookie_secure(),path=os.getenv('SESSION_COOKIE_PATH','/'))
 def authorized(db, rid, user):
@@ -418,7 +443,7 @@ async def uis_callback(code:str,state:str|None=None,leave_oauth_state:str|None=C
     if not person or not db.get(DirectoryMember,user.user_id):raise HTTPException(403,'尚未配置班级或辅导员关系，请联系管理员')
     if person.role=='admin':person.name=user.user_name[:80];db.commit()
     response=RedirectResponse(settings.frontend_url,status_code=303)
-    establish_login(db,user.user_id,response,leave_session,uis_type=user.user_type)
+    establish_login(db,user.user_id,response,leave_session,uis_type=user.user_type,uis_name=user.user_name)
     response.delete_cookie('leave_oauth_state',path=uis_state_cookie_path(),secure=cookie_secure(),httponly=True,samesite='lax')
     return response
 
@@ -444,7 +469,7 @@ def uis_sso_logout(leave_session:str|None=Cookie(default=None),db:Session=Depend
 @app.get('/api/demo/identities')
 def demo_identities(db:Session=Depends(db_session)):
     if os.getenv('APP_MODE') != 'demo': raise HTTPException(404)
-    return [{'id':p.id,'name':p.name,'role':p.role} for p in db.scalars(select(Person).join(DirectoryMember))]
+    return [{'id':p.id,'name':p.name or p.id,'role':p.role} for p in db.scalars(select(Person).join(DirectoryMember))]
 
 def require_counselor(user):
     if not has_role(user,'counselor'): raise HTTPException(403,'仅辅导员可管理签名和预览审批')

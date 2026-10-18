@@ -20,11 +20,18 @@ class CounselorConfig(StrictModel):
 
 class StudentConfig(StrictModel):
     user_id: Identifier
-    name: Name
     class_id: Identifier
     college: Name
     major: Name
     grade: Annotated[str, Field(min_length=1, max_length=20)]
+
+    @model_validator(mode='before')
+    @classmethod
+    def discard_legacy_name(cls, data):
+        # Read old rosters safely, but never serialize or persist their names.
+        if isinstance(data, dict):
+            return {key: value for key, value in data.items() if key != 'name'}
+        return data
 
 
 class ClassConfig(StrictModel):
@@ -44,9 +51,6 @@ class DirectoryConfig(StrictModel):
         for members in (self.counselors,self.students):
             ids=[p.user_id for p in members]
             if len(ids)!=len(set(ids)):raise ValueError('同一角色中的学工号不得重复')
-        names={p.user_id:p.name for p in self.counselors}
-        if any(p.user_id in names and names[p.user_id]!=p.name for p in self.students):
-            raise ValueError('兼任学生和辅导员的同一学工号必须使用相同姓名')
         counselors = {p.user_id for p in self.counselors}
         classes = {c.class_id for c in self.classes}
         if len(classes) != len(self.classes):
