@@ -6,7 +6,8 @@ import {
   ref,
   watch,
 } from "vue";
-import { api, pdfBlob, documentUrl } from "../api.js";
+import { api, apiUrl, pdfBlob, documentUrl } from "../api.js";
+import SavePdf from "./SavePdf.vue";
 const PdfPreview = defineAsyncComponent(() => import("./PdfPreview.vue"));
 
 const props = defineProps({
@@ -21,6 +22,15 @@ const opinion = ref("");
 const dialog = ref(null);
 const preview = ref(null);
 const previewUrls = ref([]);
+const previewBlobs = ref([]);
+const transfer = ref(null);
+let previewController;
+function transferProgress(generation, index, count) {
+  return (progress) => {
+    if (generation === previewGeneration)
+      transfer.value = { ...progress, index: index + 1, count };
+  };
+}
 const previewBusy = ref(false);
 const previewError = ref("");
 const selected = ref(0);
@@ -41,6 +51,10 @@ const canApprove = computed(
 );
 function clearPreview() {
   previewGeneration++;
+  previewController?.abort();
+  previewBusy.value = false;
+  transfer.value = null;
+  previewBlobs.value = [];
   previewUrls.value.forEach((url) => URL.revokeObjectURL(url));
   previewUrls.value = [];
   preview.value = null;
@@ -65,29 +79,41 @@ async function openPreview() {
   if (previewBusy.value) return;
   clearPreview();
   const generation = previewGeneration;
+  const controller = new AbortController();
+  previewController = controller;
   previewError.value = "";
   previewBusy.value = true;
   selected.value = 0;
   dialog.value.showModal();
   const urls = [];
+  const blobs = [];
   try {
     const result = await api(`requests/${props.request.id}/preview`, {
       opinion: opinion.value,
     });
-    for (let i = 0; i < result.count; i++)
-      urls.push(await pdfBlob(`previews/${result.id}/${i}`));
+    if (generation !== previewGeneration) return;
+    for (let i = 0; i < result.count; i++) {
+      const file = await pdfBlob(`previews/${result.id}/${i}`, {
+        signal: controller.signal,
+        onProgress: transferProgress(generation, i, result.count),
+      });
+      urls.push(file.url);
+      blobs.push(file.blob);
+    }
     if (generation !== previewGeneration) {
       urls.forEach((url) => URL.revokeObjectURL(url));
       return;
     }
     preview.value = result;
     previewUrls.value = urls;
+    previewBlobs.value = blobs;
     seen.value = new Set();
   } catch (error) {
     urls.forEach((url) => URL.revokeObjectURL(url));
-    previewError.value = error.message;
+    if (generation === previewGeneration && error.name !== "AbortError")
+      previewError.value = error.message;
   } finally {
-    previewBusy.value = false;
+    if (generation === previewGeneration) previewBusy.value = false;
   }
 }
 function choosePreview(index) {
@@ -101,22 +127,29 @@ async function viewDocument(document) {
   if (previewBusy.value) return;
   clearPreview();
   const generation = previewGeneration;
+  const controller = new AbortController();
+  previewController = controller;
   viewingDocument.value = document;
   previewError.value = "";
   previewBusy.value = true;
   selected.value = 0;
   dialog.value.showModal();
   try {
-    const url = await pdfBlob(`documents/${document.id}`);
+    const { url, blob } = await pdfBlob(`documents/${document.id}`, {
+      signal: controller.signal,
+      onProgress: transferProgress(generation, 0, 1),
+    });
     if (generation !== previewGeneration) {
       URL.revokeObjectURL(url);
       return;
     }
     previewUrls.value = [url];
+    previewBlobs.value = [blob];
   } catch (error) {
-    previewError.value = error.message;
+    if (generation === previewGeneration && error.name !== "AbortError")
+      previewError.value = error.message;
   } finally {
-    previewBusy.value = false;
+    if (generation === previewGeneration) previewBusy.value = false;
   }
 }
 function approve() {
@@ -301,7 +334,23 @@ const kinds = { course: "课程", activity: "活动", other: "其他" };
           {{ request.student.name }} · {{ viewingDocument.name }} ·
           已保存的审批文件
         </p>
-        <p v-if="previewBusy" role="status">正在加载带签名的请假条…</p>
+        <div v-if="previewBusy" role="status">
+          <p v-if="!transfer">正在准备请假条…</p>
+          <template v-else>
+            <p>
+              正在接收 PDF {{ transfer.index }}/{{ transfer.count }} ·
+              {{ Math.ceil(transfer.loaded / 1024) }} KB
+              <span v-if="transfer.total">
+                / {{ Math.ceil(transfer.total / 1024) }} KB</span
+              >
+            </p>
+            <progress
+              aria-label="PDF 接收进度"
+              :value="transfer.total ? transfer.loaded : undefined"
+              :max="transfer.total || 1"
+            />
+          </template>
+        </div>
         <p v-if="previewError" role="alert" class="inline-error">
           {{ previewError }}
         </p>
@@ -317,12 +366,19 @@ const kinds = { course: "课程", activity: "活动", other: "其他" };
             </button>
           </div>
           <PdfPreview :url="previewUrls[selected]" @loaded="rendered" />
-          <a
-            class="file"
-            :href="previewUrls[selected]"
-            :download="viewingDocument?.name || preview?.filenames?.[selected]"
-            >下载 PDF</a
-          >
+          <SavePdf
+            :source-url="
+              viewingDocument
+                ? documentUrl(viewingDocument.id)
+                : apiUrl(`previews/${preview.id}/${selected}`)
+            "
+            :blob="previewBlobs[selected]"
+            :filename="
+              viewingDocument?.name ||
+              preview?.filenames?.[selected] ||
+              '请假条.pdf'
+            "
+          />
           <p v-if="preview?.watermark" class="caption">
             签名水印：{{ preview.watermark }}
           </p>

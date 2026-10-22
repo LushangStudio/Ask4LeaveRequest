@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4175 --strictPort",
     "format": "prettier --write src index.html vite.config.js package.json README.md",
-    "format:check": "prettier --check src index.html vite.config.js package.json README.md"
+    "format:check": "prettier --check src index.html vite.config.js package.json README.md",
+    "test": "node --test tests/frontend/*.test.js"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "6.0.9",

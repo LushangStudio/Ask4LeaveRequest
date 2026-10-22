@@ -1,3 +1,4 @@
+import { readPdf } from "./pdf-transfer.js";
 // Relative to the page so both / and the Home proxy's /leave/ work.
 const apiBase = new URL(
   window.location.pathname.endsWith("/class-management/") ? "../api/" : "api/",
@@ -8,13 +9,10 @@ export function apiUrl(path) {
   return new URL(path, apiBase).href;
 }
 
-export async function pdfBlob(path) {
-  const response = await fetch(apiUrl(path));
-  if (!response.ok) {
-    const data = await response.json().catch(() => null);
-    throw new Error(data?.detail || "预览加载失败，请重试");
-  }
-  return URL.createObjectURL(await response.blob());
+export async function pdfBlob(path, { signal, onProgress } = {}) {
+  const response = await fetch(apiUrl(path), { signal });
+  const blob = await readPdf(response, onProgress);
+  return { blob, url: URL.createObjectURL(blob) };
 }
 
 export function documentUrl(id) {
