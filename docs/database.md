@@ -37,3 +37,11 @@ MySQL URL 格式为 `mysql+pymysql://ask4leave:<URL编码后的密码>@127.0.0.1
 学生仅可将本人 pending 申请变为 withdrawn；负责该申请的辅导员可将 approved 变为 revoked。双方仍可查看记录，状态不可恢复或重新审批。request_withdrawals 保存操作者、角色、时间、原状态与原因，原审批、签名和 PDF 留作历史数据；撤回后 API 不再提供 PDF，旧文件 URL 返回 410，生成重试和审批预览拒绝。系统不能收回此前已下载的文件。并发生成以条件更新发布，撤回获胜后不发布新 PDF。
 
 已有 MySQL 库先备份，再由迁移账号执行 docs/migrations/005-request-withdrawals.mysql.sql，然后部署并重启服务。运行账号仍仅需 DML；空库使用最新 schema.mysql.sql。
+
+## 申请附件
+
+每份申请允许 0–3 个附件，每个最多 5 MiB；附件与申请、事项在同一事务中保存至 `request_attachments`，重试提交不会重复保存。历史申请附件列表为空。附件内容不进入申请列表响应，也不合并进 PDF；仅原申请学生及该申请范围内的辅导员可以下载（包含已审批、驳回或撤回记录）。所有附件以强制下载、禁止 MIME 嗅探的方式返回，不在服务端执行或解析。
+
+既有 MySQL 库先备份，再以迁移账号执行 `docs/migrations/010-request-attachments.mysql.sql`，无需删除或改写旧数据。运行账号继续使用原有 DML 权限。新库使用最新 `schema.mysql.sql`。回滚应用可以保留新增表，不能通过删表回滚，否则会丢失附件。数据库备份会包含附件，应留意容量增长。
+
+部署前将 Nginx `/leave/` 的 `client_max_body_size` 从 `5m` 调整为 `22m`（运维仓库模板已更新），执行 `nginx -t` 后再 reload。申请 JSON 使用 base64 携带文件，三份 5 MiB 文件约占 20 MiB，请求上限设为 22 MiB；只有 `POST /api/requests` 放宽，其他接口保持 4,300,000 字节限制。MySQL `max_allowed_packet` 应至少为 32 MiB（MySQL 8 默认通常足够，部署时核验）。数据库迁移和 Nginx 配置须先完成，再发布应用。

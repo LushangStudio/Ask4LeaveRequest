@@ -54,3 +54,10 @@ def test_counter_storage_bounded_without_evicting_active_budget():
     assert probe(app)[0]['status']==204
     assert probe(app,ip='new')[0]['status']==429
     assert len(app.buckets)==2
+
+
+def test_application_upload_allowance_is_scoped_and_checks_real_stream():
+    app=HTTPResourceLimits(endpoint,max_body=10,application_body=20)
+    assert probe(app,chunks=(b'x'*20,))[0]['status']==204
+    assert probe(app,chunks=(b'x'*21,),headers=((b'content-length',b'1'),))[0]['status']==413
+    assert probe(app,chunks=(b'x'*11,),path='/api/signature')[0]['status']==413

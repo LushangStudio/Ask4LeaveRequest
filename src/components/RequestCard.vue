@@ -209,6 +209,20 @@ const kinds = { course: "课程", activity: "活动", other: "其他" };
           {{ item.time }}
         </li>
       </ul>
+      <div v-if="request.attachments?.length">
+        <h4>申请附件（{{ request.attachments.length }}）</h4>
+        <ul>
+          <li v-for="attachment in request.attachments" :key="attachment.id">
+            <a
+              :href="apiUrl(`attachments/${encodeURIComponent(attachment.id)}`)"
+              target="_blank"
+              rel="noopener"
+              >{{ attachment.name }}</a
+            >
+            · {{ Math.ceil(attachment.size / 1024) }} KB
+          </li>
+        </ul>
+      </div>
       <p v-if="request.approval" class="muted">
         {{ request.approval.approver }} ·
         {{ new Date(request.approval.at).toLocaleString() }}<br />审批意见：{{

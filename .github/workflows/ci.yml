@@ -65,7 +65,7 @@ jobs:
       - name: Test MySQL transactions, permissions and job concurrency
         env:
           MYSQL_TEST_URL: mysql+pymysql://root:ci-isolated-password@127.0.0.1:3306/mysql
-        run: python -m pytest -q tests/test_workflow.py tests/test_pdf_jobs.py tests/test_withdrawal.py tests/test_signatures_directory.py tests/test_security_boundaries.py tests/test_directory_v2.py
+        run: python -m pytest -q tests/test_workflow.py tests/test_pdf_jobs.py tests/test_withdrawal.py tests/test_signatures_directory.py tests/test_security_boundaries.py tests/test_directory_v2.py tests/test_attachments.py
       - name: Ensure generated artifacts are not tracked
         shell: bash
         run: |

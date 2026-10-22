@@ -1,5 +1,5 @@
 <script setup>
-import { reactive } from "vue";
+import { reactive, ref } from "vue";
 
 const props = defineProps({
   busy: Boolean,
@@ -7,6 +7,31 @@ const props = defineProps({
   message: String,
   maxEndDate: String,
 });
+const attachments = ref([]);
+const preparing = ref(false);
+const preparationMessage = ref("");
+function chooseFiles(event) {
+  const additions = Array.from(event.target.files || []);
+  event.target.value = "";
+  if (attachments.value.length + additions.length > 3)
+    return emit("message", "每份申请最多上传 3 个附件");
+  if (additions.some((file) => !file.size || file.size > 5 * 1024 * 1024))
+    return emit("message", "附件不能为空，每个附件最多 5 MB");
+  if (additions.some((file) => file.name.length > 180))
+    return emit("message", "附件文件名过长，请缩短后重试");
+  attachments.value.push(...additions);
+  emit("message", "");
+}
+function encodeFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () =>
+      resolve({ name: file.name, data: reader.result.split(",")[1] });
+    reader.onerror = () => reject(new Error("无法读取附件，请重新选择文件"));
+    reader.onabort = () => reject(new Error("附件读取已取消"));
+    reader.readAsDataURL(file);
+  });
+}
 const emit = defineEmits(["submit", "message"]);
 const newItem = () => ({
   id: crypto.randomUUID(),
@@ -32,25 +57,40 @@ function removeItem(index) {
   if (form.items.length === 1) return emit("message", "至少保留一个请假事项");
   form.items.splice(index, 1);
 }
-function submit() {
+async function submit() {
+  if (props.busy || preparing.value) return;
   if (props.maxEndDate && form.ends > props.maxEndDate)
     return emit(
       "message",
       `请假结束日期不得超过当前日期后三个月（最晚 ${props.maxEndDate}）`,
     );
-  emit("submit", {
-    starts: form.starts,
-    ends: form.ends,
-    reason: form.reason,
-    layout: form.layout,
-    idempotency_key: idempotencyKey,
-    items: form.items.map(({ kind, title, day, time }) => ({
-      kind,
-      title,
-      day,
-      time,
-    })),
-  });
+  preparing.value = true;
+  try {
+    const files = [];
+    for (const [index, file] of attachments.value.entries()) {
+      preparationMessage.value = `正在读取附件 ${index + 1}/${attachments.value.length}…`;
+      files.push(await encodeFile(file));
+    }
+    emit("submit", {
+      attachments: files,
+      starts: form.starts,
+      ends: form.ends,
+      reason: form.reason,
+      layout: form.layout,
+      idempotency_key: idempotencyKey,
+      items: form.items.map(({ kind, title, day, time }) => ({
+        kind,
+        title,
+        day,
+        time,
+      })),
+    });
+  } catch (error) {
+    emit("message", error.message);
+  } finally {
+    preparing.value = false;
+    preparationMessage.value = "";
+  }
 }
 </script>
 
@@ -62,7 +102,7 @@ function submit() {
     </div>
     <p id="profile" class="muted">{{ profile }}</p>
     <form id="form" @submit.prevent="submit">
-      <fieldset class="form-fields" :disabled="busy">
+      <fieldset class="form-fields" :disabled="busy || preparing">
         <div class="two">
           <label
             >开始日期<input
@@ -93,6 +133,35 @@ function submit() {
             required
           ></textarea>
         </label>
+        <fieldset>
+          <legend>附件（选填，{{ attachments.length }}/3）</legend>
+          <p class="caption">
+            每个附件最多 5 MB，作为审批材料单独保存，不合并进请假条。
+          </p>
+          <input
+            type="file"
+            multiple
+            aria-label="选择附件"
+            :disabled="attachments.length >= 3"
+            @change="chooseFiles"
+          />
+          <ul>
+            <li v-for="(file, index) in attachments" :key="index">
+              {{ file.name }} · {{ Math.ceil(file.size / 1024) }} KB
+              <button
+                type="button"
+                class="light"
+                :aria-label="`移除附件 ${file.name}`"
+                @click="attachments.splice(index, 1)"
+              >
+                移除
+              </button>
+            </li>
+          </ul>
+          <p v-if="preparationMessage" role="status">
+            {{ preparationMessage }}
+          </p>
+        </fieldset>
         <div class="section-title">
           <h3>请假事项</h3>
           <button id="add" type="button" class="light" @click="addItem">
@@ -163,8 +232,8 @@ function submit() {
           >
         </fieldset>
         <p class="muted">由系统分配给负责你的辅导员，审批通过后自动生成。</p>
-        <button id="submit" class="primary" :disabled="busy">
-          {{ busy ? "正在处理…" : "提交申请" }}
+        <button id="submit" class="primary" :disabled="busy || preparing">
+          {{ busy || preparing ? "正在处理…" : "提交申请" }}
         </button>
         <p
           v-if="message"

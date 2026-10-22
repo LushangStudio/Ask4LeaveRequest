@@ -19,7 +19,7 @@ from typing import Literal
 from types import SimpleNamespace
 from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, quote
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, Request as HTTPRequest
 from fastapi.responses import FileResponse, RedirectResponse
@@ -39,6 +39,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.platypus import Image as PDFImage, KeepTogether
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
+from app.attachments import AttachmentInput, MAX_APPLICATION_BODY
 from app.http_limits import HTTPResourceLimits
 from app.directory import read_directories, DirectoryConfig
 from app.student_import import preview_import
@@ -182,6 +183,17 @@ class Document(Base):
     name: Mapped[str] = mapped_column(String(100))
     content: Mapped[bytes] = mapped_column(LargeBinary().with_variant(MEDIUMBLOB(), 'mysql'))
     digest: Mapped[str] = mapped_column(String(64))
+
+class Attachment(Base):
+    __tablename__ = 'request_attachments'
+    __table_args__ = (UniqueConstraint('request_id', 'position'),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    request_id: Mapped[str] = mapped_column(ForeignKey('leave_requests.id'), index=True)
+    position: Mapped[int]
+    name: Mapped[str] = mapped_column(String(180))
+    size: Mapped[int] = mapped_column(Integer)
+    digest: Mapped[str] = mapped_column(String(64))
+    content: Mapped[bytes] = mapped_column(LargeBinary().with_variant(MEDIUMBLOB(), 'mysql'), deferred=True)
 
 class DirectoryMember(Base):
     __tablename__ = 'directory_members'
@@ -557,6 +569,7 @@ class ApplicationInput(BaseModel):
     ends: date
     layout: Literal['combined','separate']='combined'
     items: list[ItemInput] = Field(min_length=1,max_length=30)
+    attachments: list[AttachmentInput] = Field(default_factory=list,max_length=3)
     idempotency_key: str = Field(min_length=8,max_length=80)
     @model_validator(mode='after')
     def valid_dates(self):
@@ -573,6 +586,7 @@ def serialize(db,row):
     withdrawal=db.get(Withdrawal,row.id)
     return {'id':row.id,'student':row.snapshot,'reason':row.reason,'starts':row.starts,'ends':row.ends,'layout':row.layout,'status':row.status,'file_status':row.file_status,'generation_error':row.generation_error,'created':row.created,
       'items':[{'kind':i.kind,'title':i.title,'day':i.day,'time':i.time} for i in db.scalars(select(Item).where(Item.request_id==row.id).order_by(Item.position))],
+      'attachments':[{'id':a.id,'name':a.name,'size':a.size} for a in db.scalars(select(Attachment).where(Attachment.request_id==row.id).order_by(Attachment.position))],
       'approval':{'approver':approval.approver_name,'outcome':approval.outcome,'opinion':approval.opinion,'at':approval.at} if approval else None,
       'withdrawal':{'actor':withdrawal.actor_name,'role':withdrawal.actor_role,'reason':withdrawal.reason,'at':withdrawal.at} if withdrawal else None,
       'documents':[{'id':d.id,'name':d.name,'sha256':d.digest} for d in db.scalars(select(Document).where(Document.request_id==row.id).order_by(Document.position))] if row.status=='approved' else []}
@@ -581,7 +595,9 @@ def submit(body:ApplicationInput, db:Session=Depends(db_session),user:Person=Dep
     if not has_role(user,'student'): raise HTTPException(403,'仅学生可提交申请')
     counselors = user.profile.get('counselor_ids',[])
     if not counselors or not all(db.get(DirectoryMember,c) for c in counselors): raise HTTPException(409,'尚未分配有效班级辅导员，请联系管理员')
-    payload=body.model_dump(mode='json'); payload.pop('idempotency_key')
+    payload=body.model_dump(mode='json',exclude={'attachments'}); payload.pop('idempotency_key')
+    if body.attachments:
+        payload['attachments']=[{'name':a.name,'sha256':hashlib.sha256(a._content).hexdigest()} for a in body.attachments]
     digest=hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
     old=db.scalar(select(Request).where(Request.student_id==user.id,Request.idempotency_key==body.idempotency_key))
     if old:
@@ -592,6 +608,9 @@ def submit(body:ApplicationInput, db:Session=Depends(db_session),user:Person=Dep
         db.add(row); db.flush()
         for counselor_id in counselors:
             db.add(RequestCounselor(request_id=row.id,counselor_id=counselor_id))
+        for pos,attachment in enumerate(body.attachments):
+            db.add(Attachment(id=str(uuid.uuid4()),request_id=row.id,position=pos,name=attachment.name,
+                              size=len(attachment._content),digest=hashlib.sha256(attachment._content).hexdigest(),content=attachment._content))
         for pos,item in enumerate(body.items):
             db.add(Item(id=str(uuid.uuid4()),request_id=row.id,position=pos,kind=item.kind,title=item.title,day=str(item.day),time=item.time))
         db.commit()
@@ -946,6 +965,16 @@ def retry(rid:str,db:Session=Depends(db_session),user:Person=Depends(current_use
         generate(rid)
     db.expire_all()
     return serialize(db,db.get(Request,rid))
+@app.get('/api/attachments/{aid}')
+def download_attachment(aid:str,db:Session=Depends(db_session),user:Person=Depends(current_user)):
+    attachment=db.get(Attachment,aid)
+    if not attachment:raise HTTPException(404,'附件不存在或无权查看')
+    authorized(db,attachment.request_id,user)
+    return Response(attachment.content,media_type='application/octet-stream',headers={
+        'Content-Disposition':f"attachment; filename=attachment; filename*=UTF-8''{quote(attachment.name,safe='')}",
+        'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff',
+        'Content-Security-Policy':"sandbox; default-src 'none'"})
+
 @app.get('/api/documents/{did}')
 def download(did:str,db:Session=Depends(db_session),user:Person=Depends(current_user)):
     doc=db.get(Document,did)
@@ -963,8 +992,6 @@ async def no_cache(request,call_next):
         (origin is not None and origin != expected) or request.headers.get('sec-fetch-site')=='cross-site'
     ):
         response=Response(json.dumps({'detail':'请求来源不被允许'}),status_code=403,media_type='application/json')
-    elif request.headers.get('content-length','').isdigit() and int(request.headers['content-length'])>4_300_000:
-        response=Response(json.dumps({'detail':'请求内容过大'}),status_code=413,media_type='application/json')
     else:
         response=await call_next(request)
     response.headers['Cache-Control']='no-store'
@@ -972,7 +999,7 @@ async def no_cache(request,call_next):
     response.headers['Referrer-Policy']='no-referrer'
     response.headers['X-Frame-Options']='SAMEORIGIN'
     return response
-app.add_middleware(HTTPResourceLimits)
+app.add_middleware(HTTPResourceLimits, application_body=MAX_APPLICATION_BODY)
 app.add_middleware(TestQueryRedaction)
 # Relative Vite asset URLs work both directly and behind the /leave/ proxy.
 FRONTEND_DIST = ROOT/'dist'

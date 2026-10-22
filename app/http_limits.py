@@ -14,9 +14,10 @@ from collections import OrderedDict
 
 class HTTPResourceLimits:
     def __init__(self, app, max_body=4_300_000, window=60, ip_limit=600,
-                 expensive_limit=120, max_clients=10000, clock=time.monotonic):
+                 expensive_limit=120, max_clients=10000, clock=time.monotonic, application_body=None):
         self.app = app
         self.max_body = max_body
+        self.application_body = application_body if application_body is not None else max_body
         self.window = window
         self.ip_limit = ip_limit
         self.expensive_limit = expensive_limit
@@ -69,12 +70,13 @@ class HTTPResourceLimits:
                 retry = self.allow(('expensive', key), self.expensive_limit)
             if retry:
                 return await self.reject(send, 429, '请求过于频繁，请稍后重试', retry)
+        body_limit = self.application_body if path == '/api/requests' and scope['method'] == 'POST' else self.max_body
         headers = dict(scope['headers'])
         length = headers.get(b'content-length')
         if length is not None:
             if not length.isdigit():
                 return await self.reject(send, 400, '请求长度无效')
-            if int(length) > self.max_body:
+            if int(length) > body_limit:
                 return await self.reject(send, 413, '请求内容过大')
         # Check the actual stream, including chunked/incorrectly declared bodies,
         # before any mutation can be dispatched to the application.
@@ -84,7 +86,7 @@ class HTTPResourceLimits:
             if message['type'] == 'http.disconnect':
                 return
             body.extend(message.get('body', b''))
-            if len(body) > self.max_body:
+            if len(body) > body_limit:
                 return await self.reject(send, 413, '请求内容过大')
             if not message.get('more_body', False):
                 break
