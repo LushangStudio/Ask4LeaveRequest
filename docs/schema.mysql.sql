@@ -79,6 +79,7 @@ CREATE TABLE leave_requests (
 	starts VARCHAR(10) NOT NULL,
 	ends VARCHAR(10) NOT NULL,
 	layout VARCHAR(16) NOT NULL,
+	mode VARCHAR(16) NOT NULL DEFAULT 'legacy',
 	status VARCHAR(16) NOT NULL,
 	file_status VARCHAR(16) NOT NULL,
 	generation_error TEXT,

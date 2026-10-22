@@ -194,7 +194,10 @@ const kinds = { course: "课程", activity: "活动", other: "其他" };
       <span>{{ expanded ? "收起详情 ▴" : "展开详情 ▾" }}</span>
     </button>
     <p>
-      {{ request.starts }} 至 {{ request.ends }} ·
+      <template v-if="request.mode === 'items'"
+        >按事项请假 · {{ request.items.length }} 个事项 ·
+      </template>
+      <template v-else>{{ request.starts }} 至 {{ request.ends }} · </template>
       {{ request.layout === "combined" ? "合并生成" : "分别生成" }}
     </p>
     <p class="muted">
@@ -211,6 +214,9 @@ const kinds = { course: "课程", activity: "活动", other: "其他" };
       </ul>
       <div v-if="request.attachments?.length">
         <h4>申请附件（{{ request.attachments.length }}）</h4>
+        <p class="caption">
+          附件保留至 {{ request.attachments_retained_through }}，之后自动删除。
+        </p>
         <ul>
           <li v-for="attachment in request.attachments" :key="attachment.id">
             <a

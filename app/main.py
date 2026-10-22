@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import (JSON, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, func,
-                        create_engine, select, update, event)
+                        create_engine, select, update, event, inspect, text)
 from sqlalchemy.dialects.mysql import MEDIUMBLOB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -40,6 +40,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.platypus import Image as PDFImage, KeepTogether
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 from app.attachments import AttachmentInput, MAX_APPLICATION_BODY
+from app.attachment_retention import expired as attachments_expired, retained_through
 from app.http_limits import HTTPResourceLimits
 from app.directory import read_directories, DirectoryConfig
 from app.student_import import preview_import
@@ -98,6 +99,7 @@ class Request(Base):
     starts: Mapped[str] = mapped_column(String(10))
     ends: Mapped[str] = mapped_column(String(10))
     layout: Mapped[str] = mapped_column(String(16))
+    mode: Mapped[str] = mapped_column(String(16), default='legacy', server_default='legacy')
     status: Mapped[str] = mapped_column(String(16), default='pending')
     file_status: Mapped[str] = mapped_column(String(16), default='not_started')
     generation_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -291,6 +293,11 @@ async def lifespan(app):
     app.state.uis_settings=uis
     app.state.uis_names={}
     Base.metadata.create_all(engine)
+    if 'mode' not in {column['name'] for column in inspect(engine).get_columns('leave_requests')}:
+        if engine.dialect.name != 'sqlite':
+            raise RuntimeError('Apply migration 011-application-mode before starting this release')
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE leave_requests ADD COLUMN mode VARCHAR(16) NOT NULL DEFAULT 'legacy'"))
     with Session(engine) as db:
         state=db.get(DirectoryState,1)
         if state is None:
@@ -325,11 +332,15 @@ async def lifespan(app):
         else:
             db.execute(update(Request).where(Request.file_status=='generating').values(file_status='failed', generation_error='生成被中断，请重试'))
         db.commit()
+    from app.attachment_retention import purge, Worker as RetentionWorker
+    purge(engine)
+    retention_worker = RetentionWorker(engine)
     from app.pdf_jobs import start_worker
     worker = start_worker() if async_enabled() else None
     try:
         yield
     finally:
+        retention_worker.stop()
         if worker:
             worker.stop()
 app = FastAPI(title='Ask4LeaveRequest',lifespan=lifespan)
@@ -565,16 +576,29 @@ class ItemInput(BaseModel):
         return self
 class ApplicationInput(BaseModel):
     reason: str = Field(min_length=1,max_length=4000)
-    starts: date
-    ends: date
+    mode: Literal['date_range','items'] | None = None
+    starts: date | None = None
+    ends: date | None = None
     layout: Literal['combined','separate']='combined'
-    items: list[ItemInput] = Field(min_length=1,max_length=30)
+    items: list[ItemInput] = Field(default_factory=list,max_length=30)
     attachments: list[AttachmentInput] = Field(default_factory=list,max_length=3)
     idempotency_key: str = Field(min_length=8,max_length=80)
     @model_validator(mode='after')
     def valid_dates(self):
         self.reason=self.reason.strip()
         if not self.reason: raise ValueError('请填写请假原因')
+        if self.mode == 'items':
+            if self.starts is not None or self.ends is not None:
+                raise ValueError('事项模式无需填写起止日期')
+            if not self.items:raise ValueError('请至少填写一个请假事项')
+            self.starts=min(item.day for item in self.items)
+            self.ends=max(item.day for item in self.items)
+        elif self.mode == 'date_range':
+            if self.items:raise ValueError('起止日期模式无需填写具体事项')
+            if self.layout != 'combined':raise ValueError('起止日期模式只生成一份请假条')
+        elif not self.items:
+            raise ValueError('请至少填写一个请假事项')
+        if self.starts is None or self.ends is None:raise ValueError('请填写完整的起止日期')
         if self.ends < self.starts: raise ValueError('结束日期不能早于开始日期')
         limit=leave_end_limit()
         if self.ends>limit:raise ValueError(f'请假结束日期不得超过当前日期后三个月（最晚 {limit}）')
@@ -584,18 +608,21 @@ class ApplicationInput(BaseModel):
 def serialize(db,row):
     approval=db.get(Decision,row.id)
     withdrawal=db.get(Withdrawal,row.id)
-    return {'id':row.id,'student':row.snapshot,'reason':row.reason,'starts':row.starts,'ends':row.ends,'layout':row.layout,'status':row.status,'file_status':row.file_status,'generation_error':row.generation_error,'created':row.created,
+    return {'id':row.id,'student':row.snapshot,'reason':row.reason,'starts':row.starts,'ends':row.ends,'layout':row.layout,'mode':row.mode,'status':row.status,'file_status':row.file_status,'generation_error':row.generation_error,'created':row.created,
       'items':[{'kind':i.kind,'title':i.title,'day':i.day,'time':i.time} for i in db.scalars(select(Item).where(Item.request_id==row.id).order_by(Item.position))],
-      'attachments':[{'id':a.id,'name':a.name,'size':a.size} for a in db.scalars(select(Attachment).where(Attachment.request_id==row.id).order_by(Attachment.position))],
+      'attachments_retained_through':retained_through(row.ends).isoformat(),
+      'attachments_expired':attachments_expired(row.ends),
+      'attachments':[] if attachments_expired(row.ends) else [{'id':a.id,'name':a.name,'size':a.size} for a in db.scalars(select(Attachment).where(Attachment.request_id==row.id).order_by(Attachment.position))],
       'approval':{'approver':approval.approver_name,'outcome':approval.outcome,'opinion':approval.opinion,'at':approval.at} if approval else None,
       'withdrawal':{'actor':withdrawal.actor_name,'role':withdrawal.actor_role,'reason':withdrawal.reason,'at':withdrawal.at} if withdrawal else None,
-      'documents':[{'id':d.id,'name':d.name,'sha256':d.digest} for d in db.scalars(select(Document).where(Document.request_id==row.id).order_by(Document.position))] if row.status=='approved' else []}
+      'documents':[{'id':d.id,'name':d.name,'sha256':d.digest} for d in db.scalars(select(Document).where(Document.request_id==row.id).order_by(Document.position))] if row.status=='approved' and row.file_status=='ready' else []}
 @app.post('/api/requests',status_code=201)
 def submit(body:ApplicationInput, db:Session=Depends(db_session),user:Person=Depends(current_user)):
     if not has_role(user,'student'): raise HTTPException(403,'仅学生可提交申请')
     counselors = user.profile.get('counselor_ids',[])
     if not counselors or not all(db.get(DirectoryMember,c) for c in counselors): raise HTTPException(409,'尚未分配有效班级辅导员，请联系管理员')
     payload=body.model_dump(mode='json',exclude={'attachments'}); payload.pop('idempotency_key')
+    if body.mode is None:payload.pop('mode')
     if body.attachments:
         payload['attachments']=[{'name':a.name,'sha256':hashlib.sha256(a._content).hexdigest()} for a in body.attachments]
     digest=hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
@@ -603,7 +630,7 @@ def submit(body:ApplicationInput, db:Session=Depends(db_session),user:Person=Dep
     if old:
         if old.payload_hash!=digest: raise HTTPException(409,'重复提交标识已用于不同内容')
         return serialize(db,old)
-    row=Request(id=str(uuid.uuid4()),student_id=user.id,counselor_id=user.counselor,idempotency_key=body.idempotency_key,payload_hash=digest,snapshot={'name':user.name,**user.profile},reason=body.reason,starts=str(body.starts),ends=str(body.ends),layout=body.layout,created=datetime.now(timezone.utc).isoformat())
+    row=Request(id=str(uuid.uuid4()),student_id=user.id,counselor_id=user.counselor,idempotency_key=body.idempotency_key,payload_hash=digest,snapshot={'name':user.name,**user.profile},reason=body.reason,starts=str(body.starts),ends=str(body.ends),layout=body.layout,mode=body.mode or 'legacy',created=datetime.now(timezone.utc).isoformat())
     try:
         db.add(row); db.flush()
         for counselor_id in counselors:
@@ -722,6 +749,7 @@ def chinese_date(value):
 
 def signature_watermark(row):
     days = (date.fromisoformat(row.ends)-date.fromisoformat(row.starts)).days+1
+    if row.mode == 'items':return f"{row.snapshot['name']}-事项请假-{row.starts}"
     return f"{row.snapshot['name']}-{row.starts}-{days}天"
 
 def watermarked_signature(content,label):
@@ -781,12 +809,22 @@ def render_pdf(row,decision,items,signature=None,draft=False):
     days=(date.fromisoformat(row.ends)-date.fromisoformat(row.starts)).days+1
     period=chinese_date(row.starts) if row.starts==row.ends else f'{chinese_date(row.starts)}至{chinese_date(row.ends)}'
     reason=row.reason.strip().rstrip('。.!！?？;；')
-    narrative=f"该生请假事由为{reason}。经辅导员审核，{'拟同意' if draft else '同意'}其于{period}请假，共 {days} 天。"
     names={'course':'课程','activity':'活动','other':'事项'}
-    # A split document describes only its own item; only merged multiple items need a table.
-    if len(items)==1:
-        item=items[0]
-        narrative+=f'本请假条适用于{chinese_date(item.day)}（{item.time}）的“{item.title}”{names[item.kind]}。'
+    agreement='拟同意' if draft else '同意'
+    if row.mode == 'date_range':
+        narrative=f'该生因{reason}，经辅导员审核，{agreement}其于{chinese_date(row.starts)}至{chinese_date(row.ends)}请假，共 {days} 天。'
+    elif row.mode == 'items':
+        if len(items)==1:
+            item=items[0]
+            narrative=f'该生因{reason}，经辅导员审核，{agreement}其于{chinese_date(item.day)}（{item.time}）就“{item.title}”{names[item.kind]}请假。'
+        else:
+            narrative=f'该生因{reason}，经辅导员审核，{agreement}其就以下事项请假。'
+    else:
+        # Preserve existing applications and their historical document wording.
+        narrative=f"该生请假事由为{reason}。经辅导员审核，{agreement}其于{period}请假，共 {days} 天。"
+        if len(items)==1:
+            item=items[0]
+            narrative+=f'本请假条适用于{chinese_date(item.day)}（{item.time}）的“{item.title}”{names[item.kind]}。'
     if decision.opinion and decision.opinion.strip() not in {'同意','同意。'}:
         narrative+=f'辅导员审批意见为：“{decision.opinion.strip().rstrip("。")}”。'
     story=[Paragraph('请 假 条',title),p(identity),p(narrative)]
@@ -969,7 +1007,8 @@ def retry(rid:str,db:Session=Depends(db_session),user:Person=Depends(current_use
 def download_attachment(aid:str,db:Session=Depends(db_session),user:Person=Depends(current_user)):
     attachment=db.get(Attachment,aid)
     if not attachment:raise HTTPException(404,'附件不存在或无权查看')
-    authorized(db,attachment.request_id,user)
+    row=authorized(db,attachment.request_id,user)
+    if attachments_expired(row.ends):raise HTTPException(410,'附件已超过保留期限')
     return Response(attachment.content,media_type='application/octet-stream',headers={
         'Content-Disposition':f"attachment; filename=attachment; filename*=UTF-8''{quote(attachment.name,safe='')}",
         'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff',

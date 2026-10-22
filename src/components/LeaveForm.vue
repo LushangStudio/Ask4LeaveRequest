@@ -1,5 +1,5 @@
 <script setup>
-import { reactive, ref } from "vue";
+import { computed, reactive, ref } from "vue";
 
 const props = defineProps({
   busy: Boolean,
@@ -41,11 +41,16 @@ const newItem = () => ({
   time: "",
 });
 const form = reactive({
+  mode: "date_range",
   starts: "",
   ends: "",
   reason: "",
   layout: "combined",
   items: [newItem()],
+});
+const reasonPreview = computed(() => {
+  const reason = form.reason.trim().replace(/[。.!！?？;；]+$/u, "");
+  return `将呈现为：该生因${reason || "【请假事由】"}……`;
 });
 // Keep the same key after network failures so retrying does not duplicate a request.
 const idempotencyKey = crypto.randomUUID();
@@ -59,7 +64,11 @@ function removeItem(index) {
 }
 async function submit() {
   if (props.busy || preparing.value) return;
-  if (props.maxEndDate && form.ends > props.maxEndDate)
+  if (
+    form.mode === "date_range" &&
+    props.maxEndDate &&
+    form.ends > props.maxEndDate
+  )
     return emit(
       "message",
       `请假结束日期不得超过当前日期后三个月（最晚 ${props.maxEndDate}）`,
@@ -73,17 +82,22 @@ async function submit() {
     }
     emit("submit", {
       attachments: files,
-      starts: form.starts,
-      ends: form.ends,
+      mode: form.mode,
+      ...(form.mode === "date_range"
+        ? { starts: form.starts, ends: form.ends }
+        : {}),
       reason: form.reason,
-      layout: form.layout,
+      layout: form.mode === "date_range" ? "combined" : form.layout,
       idempotency_key: idempotencyKey,
-      items: form.items.map(({ kind, title, day, time }) => ({
-        kind,
-        title,
-        day,
-        time,
-      })),
+      items:
+        form.mode === "items"
+          ? form.items.map(({ kind, title, day, time }) => ({
+              kind,
+              title,
+              day,
+              time,
+            }))
+          : [],
     });
   } catch (error) {
     emit("message", error.message);
@@ -103,7 +117,24 @@ async function submit() {
     <p id="profile" class="muted">{{ profile }}</p>
     <form id="form" @submit.prevent="submit">
       <fieldset class="form-fields" :disabled="busy || preparing">
-        <div class="two">
+        <fieldset>
+          <legend>请假方式</legend>
+          <label class="radio"
+            ><input
+              v-model="form.mode"
+              type="radio"
+              value="date_range"
+            />按起止日期请假</label
+          >
+          <label class="radio"
+            ><input
+              v-model="form.mode"
+              type="radio"
+              value="items"
+            />按具体事项请假（请假条包含具体课程、活动等）</label
+          >
+        </fieldset>
+        <div v-if="form.mode === 'date_range'" class="two">
           <label
             >开始日期<input
               v-model="form.starts"
@@ -121,7 +152,7 @@ async function submit() {
           /></label>
         </div>
         <p v-if="maxEndDate" class="caption">
-          结束日期最晚为 {{ maxEndDate }}，按北京时间加三个自然月计算。
+          请假日期最晚为 {{ maxEndDate }}，按北京时间加三个自然月计算。
         </p>
         <label
           >请假原因<textarea
@@ -133,10 +164,12 @@ async function submit() {
             required
           ></textarea>
         </label>
+        <p class="caption" aria-live="polite">{{ reasonPreview }}</p>
         <fieldset>
           <legend>附件（选填，{{ attachments.length }}/3）</legend>
           <p class="caption">
-            每个附件最多 5 MB，作为审批材料单独保存，不合并进请假条。
+            每个附件最多 5
+            MB，作为审批材料单独保存，不合并进请假条。请假结束日期（或最晚事项日期）一个自然月后自动删除附件。
           </p>
           <input
             type="file"
@@ -162,13 +195,13 @@ async function submit() {
             {{ preparationMessage }}
           </p>
         </fieldset>
-        <div class="section-title">
+        <div v-if="form.mode === 'items'" class="section-title">
           <h3>请假事项</h3>
           <button id="add" type="button" class="light" @click="addItem">
             ＋ 添加事项
           </button>
         </div>
-        <div id="items">
+        <div v-if="form.mode === 'items'" id="items">
           <div v-for="(item, index) in form.items" :key="item.id" class="item">
             <div class="item-head">
               <b>请假事项 {{ index + 1 }}</b
@@ -199,7 +232,12 @@ async function submit() {
             </div>
             <div class="two">
               <label
-                >日期<input v-model="item.day" name="day" type="date" required
+                >日期<input
+                  v-model="item.day"
+                  name="day"
+                  type="date"
+                  :max="maxEndDate"
+                  required
               /></label>
               <label
                 >节次或时间<input
@@ -212,7 +250,7 @@ async function submit() {
             </div>
           </div>
         </div>
-        <fieldset>
+        <fieldset v-if="form.mode === 'items'">
           <legend>请假条生成方式</legend>
           <label class="radio"
             ><input
