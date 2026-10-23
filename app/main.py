@@ -343,7 +343,7 @@ async def lifespan(app):
         retention_worker.stop()
         if worker:
             worker.stop()
-app = FastAPI(title='Ask4LeaveRequest',lifespan=lifespan)
+app = FastAPI(title='Ask4LeaveRequest',version='1.0.1',lifespan=lifespan)
 def db_session():
     with Session(engine) as db: yield db
 def current_user(leave_session: str | None = Cookie(default=None), db:Session=Depends(db_session)):

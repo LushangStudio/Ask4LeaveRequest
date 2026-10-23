@@ -24,11 +24,14 @@ export default defineConfig({
     },
   ],
   build: {
+    cssCodeSplit: false,
     outDir: "dist",
     emptyOutDir: true,
     minify: "esbuild",
     cssMinify: true,
     sourcemap: false,
+    // WebVPN wraps JS in a normal function; ship no module imports/exports.
+    rollupOptions: { output: { format: "iife", inlineDynamicImports: true } },
   },
   server: { proxy },
   preview: { proxy },

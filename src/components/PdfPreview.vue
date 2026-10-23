@@ -1,9 +1,15 @@
 <script setup>
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/build/pdf.mjs";
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import PdfWorker from "pdfjs-dist/build/pdf.worker.mjs?worker&inline";
 
-GlobalWorkerOptions.workerSrc = workerUrl;
+// A bundled classic Blob worker avoids WebVPN rewriting a module worker.
+// Initialize lazily so opening the app does not allocate a PDF worker.
+function ensurePdfWorker() {
+  if (!GlobalWorkerOptions.workerPort) {
+    GlobalWorkerOptions.workerPort = new PdfWorker();
+  }
+}
 const props = defineProps({ url: { type: String, required: true } });
 const emit = defineEmits(["loaded", "error"]);
 const holder = ref(null);
@@ -40,6 +46,7 @@ async function render() {
   zoom.value = 1;
   await nextTick();
   try {
+    ensurePdfWorker();
     const loadingTask = getDocument({ url, isEvalSupported: false });
     task = loadingTask;
     const pdf = await loadingTask.promise;

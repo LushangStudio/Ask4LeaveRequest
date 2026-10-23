@@ -1,11 +1,11 @@
 {
   "name": "ask4leave-request",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5175 --strictPort",
-    "build": "vite build",
+    "build": "vite build && node scripts/check-webvpn-build.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 4175 --strictPort",
     "format": "prettier --write src index.html vite.config.js package.json README.md",
     "format:check": "prettier --check src index.html vite.config.js package.json README.md",
