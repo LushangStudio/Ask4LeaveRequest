@@ -15,6 +15,7 @@ const message = ref("");
 const formMessage = ref("");
 const busy = ref(false);
 const formVersion = ref(0);
+const studentTab = ref("apply");
 const identities = ref([]);
 const signatureVersion = ref(null);
 const runtime = ref({
@@ -87,6 +88,7 @@ function login() {
     signatureVersion.value = null;
     formMessage.value = "";
     formVersion.value++;
+    studentTab.value = "apply";
     await loadRecords();
   });
 }
@@ -96,7 +98,8 @@ function submit(payload) {
       await api("requests", payload);
       formVersion.value++;
       await loadRecords();
-      formMessage.value = "申请已提交，等待辅导员审批。";
+      studentTab.value = "records";
+      message.value = "申请已提交，等待辅导员审批。";
     },
     { messageTarget: formMessage },
   );
@@ -114,11 +117,18 @@ function retry(id) {
     await loadRecords();
   });
 }
-function withdraw({ id, reason }) {
+function withdraw({ id, reason, approval_at }) {
   return run(async () => {
-    await api(`requests/${id}/withdraw`, { reason, role: viewRole.value });
+    await api(`requests/${id}/withdraw`, {
+      reason,
+      role: viewRole.value,
+      approval_at,
+    });
     await loadRecords();
-    message.value = "已撤回，历史记录保留。";
+    message.value =
+      viewRole.value === "counselor"
+        ? "已退回待审批，原 PDF 失效，历史记录保留。"
+        : "已撤回，历史记录保留。";
   });
 }
 function logout() {
@@ -263,22 +273,67 @@ onMounted(async () => {
       :key="user.id"
       @saved="signatureVersion = $event.version"
     />
-    <div
-      class="workspace"
-      :class="{ 'single-column': viewRole !== 'student' }"
-      :aria-busy="busy"
+    <nav
+      v-if="user && viewRole === 'student'"
+      class="student-tabs"
+      role="tablist"
+      aria-label="学生工作台"
     >
-      <LeaveForm
+      <button
+        id="apply-tab"
+        role="tab"
+        :aria-selected="studentTab === 'apply'"
+        aria-controls="apply-panel"
+        :tabindex="studentTab === 'apply' ? 0 : -1"
+        @keydown.right.prevent="
+          studentTab = 'records';
+          $event.currentTarget.nextElementSibling.focus();
+        "
+        @click="studentTab = 'apply'"
+      >
+        新建请假申请
+      </button>
+      <button
+        id="records-tab"
+        role="tab"
+        :aria-selected="studentTab === 'records'"
+        aria-controls="records-panel"
+        :tabindex="studentTab === 'records' ? 0 : -1"
+        @keydown.left.prevent="
+          studentTab = 'apply';
+          $event.currentTarget.previousElementSibling.focus();
+        "
+        @click="studentTab = 'records'"
+      >
+        我的申请（{{ records.length }}）
+      </button>
+    </nav>
+    <div class="workspace single-column" :aria-busy="busy">
+      <div
         v-if="user && viewRole === 'student'"
-        :key="`${user.id}-${formVersion}`"
-        :profile="profile"
-        :busy="busy"
-        :message="formMessage"
-        :max-end-date="runtime.max_end_date"
-        @submit="submit"
-        @message="formMessage = $event"
-      />
-      <section class="panel">
+        v-show="studentTab === 'apply'"
+        id="apply-panel"
+        role="tabpanel"
+        aria-labelledby="apply-tab"
+      >
+        <LeaveForm
+          v-if="user && viewRole === 'student'"
+          :key="`${user.id}-${formVersion}`"
+          :profile="profile"
+          :busy="busy"
+          :message="formMessage"
+          :max-end-date="runtime.max_end_date"
+          @submit="submit"
+          @message="formMessage = $event"
+        />
+      </div>
+      <section
+        v-show="!user || viewRole !== 'student' || studentTab === 'records'"
+        id="records-panel"
+        :role="user && viewRole === 'student' ? 'tabpanel' : undefined"
+        :aria-labelledby="viewRole === 'student' ? 'records-tab' : 'list-title'"
+        class="panel"
+      >
         <div class="section-title">
           <h2 id="list-title">
             {{ viewRole === "counselor" ? "我负责的申请" : "我的申请" }}

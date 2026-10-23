@@ -25,7 +25,7 @@ def test_self_counselor_can_submit_approve_and_revoke(client):
     row=approve(client,rid).json()
     assert row['status']=='approved' and row['approval']['approver']=='student-a'
     assert client.post(f'/api/requests/{rid}/withdraw',json={'role':'student'}).status_code==409
-    assert client.post(f'/api/requests/{rid}/withdraw',json={'role':'counselor'}).json()['status']=='revoked'
+    assert client.post(f'/api/requests/{rid}/withdraw',json={'role':'counselor'}).json()['status']=='pending'
 
 
 def test_dual_views_scope_multiple_classes_and_pending_withdrawal(client):

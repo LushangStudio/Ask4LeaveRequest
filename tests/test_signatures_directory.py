@@ -76,7 +76,7 @@ def test_multiclass_counselor_and_one_final_decision(client):
     approved=client.get('/api/requests/'+first['id']).json()
     assert approved['approval']['approver']=='counselor-c'
     text=''.join(p.extract_text() for p in PdfReader(io.BytesIO(client.get('/api/documents/'+approved['documents'][0]['id']).content)).pages)
-    assert 'counselor-c' in text and '工商管理一班' in text
+    assert 'counselor-c' not in text and '工商管理一班' in text
 
 
 @pytest.mark.parametrize('layout,count',[('combined',1),('separate',2)])
@@ -91,7 +91,7 @@ def test_preview_requires_signature_has_watermark_and_no_side_effects(client,lay
     assert client.post(f'/api/requests/{rid}/decision',json={'outcome':'approved'}).status_code==409
     preview=client.post(f'/api/requests/{rid}/preview',json={'opinion':'已核对'}).json()
     assert preview['count']==count
-    assert preview['watermark']=='student-a-2026-10-01-3天'
+    assert preview['watermark']=='仅供student-a2026.10.01-2026.10.03使用'
     for index in range(count):
         response=client.get(f"/api/previews/{preview['id']}/{index}")
         assert response.status_code==200
@@ -143,7 +143,7 @@ def test_signature_snapshot_survives_replacement_and_retry(client,monkeypatch):
     with Session(m.engine) as db:
         snapshot=db.get(m.ApprovalSignature,rid)
         saved=snapshot.content
-        assert snapshot.signature_version==before and snapshot.watermark.endswith('-3天')
+        assert snapshot.signature_version==before and snapshot.watermark=='仅供student-a2026.10.01-2026.10.03使用'
     client.post('/api/signature',json=signature_payload())
     assert client.get('/api/signature').json()['version']!=before
     monkeypatch.setattr(m,'render_pdf',original)

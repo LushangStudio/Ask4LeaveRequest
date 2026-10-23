@@ -94,7 +94,7 @@ def test_revocation_during_background_generation_prevents_publish(queued,monkeyp
     monkeypatch.setattr(m,'render_pdf',revoke)
     jobs.run_one(m.engine)
     row=c.get('/api/requests/'+rid).json()
-    assert row['status']=='revoked' and row['file_status']=='cancelled' and row['documents']==[]
+    assert row['status']=='pending' and row['file_status']=='not_started' and row['documents']==[]
     with Session(m.engine) as db:assert db.scalar(select(func.count()).select_from(m.Document))==0
 
 
@@ -110,3 +110,21 @@ def test_real_worker_picks_up_persisted_job(queued):
             time.sleep(.05)
         assert row['file_status']=='ready'
     finally:worker.stop()
+
+
+@pytest.mark.parametrize('fail_old',[False,True])
+def test_reapproval_fences_previous_worker(queued,monkeypatch,fail_old):
+    c,rid=queued;original=m.render_pdf;old=[True]
+    def reopen(*args):
+        if old[0]:
+            old[0]=False
+            assert c.post(f'/api/requests/{rid}/withdraw',json={'role':'counselor'}).json()['status']=='pending'
+            assert approve(c,rid).json()['status']=='approved'
+            if fail_old:raise RuntimeError('old approval renderer failed')
+        return original(*args)
+    monkeypatch.setattr(m,'render_pdf',reopen)
+    jobs.run_one(m.engine)
+    row=c.get('/api/requests/'+rid).json()
+    assert row['file_status']=='generating' and row['documents']==[]
+    assert jobs.run_one(m.engine)
+    assert len(c.get('/api/requests/'+rid).json()['documents'])==2

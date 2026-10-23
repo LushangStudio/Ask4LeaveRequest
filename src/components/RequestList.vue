@@ -1,7 +1,14 @@
 <script setup>
 import { computed, ref, watch } from "vue";
 import RequestCard from "./RequestCard.vue";
-
+import {
+  statuses,
+  firstTitle,
+  firstTime,
+  firstDate,
+  latestOpinion,
+  timestamp,
+} from "../request-display.js";
 const props = defineProps({
   records: { type: Array, required: true },
   role: String,
@@ -10,59 +17,117 @@ const props = defineProps({
 });
 const emit = defineEmits(["decision", "retry", "withdraw"]);
 const page = ref(1);
+const selectedId = ref(null);
+const selected = computed(() =>
+  props.records.find((row) => row.id === selectedId.value),
+);
 const pageSize = 10;
-const overrides = ref(new Map());
 const pageCount = computed(() =>
   Math.max(1, Math.ceil(props.records.length / pageSize)),
 );
 const visibleRecords = computed(() =>
   props.records.slice((page.value - 1) * pageSize, page.value * pageSize),
 );
-// A status transition restores the default; ordinary polling keeps manual choices.
-const stateKey = (record) =>
-  `${record.id}:${record.status}:${record.file_status}`;
-function isExpanded(record) {
-  return (
-    overrides.value.get(stateKey(record)) ??
-    (props.role === "student"
-      ? record.id === props.records[0]?.id
-      : record.status === "pending" ||
-        (record.status === "approved" && record.file_status === "failed"))
-  );
-}
-function toggle(record) {
-  overrides.value.set(stateKey(record), !isExpanded(record));
-}
 watch(
   () => props.records,
   (rows, previous) => {
-    const keys = new Set(rows.map(stateKey));
-    for (const key of overrides.value.keys())
-      if (!keys.has(key)) overrides.value.delete(key);
-    // A newly submitted request should be immediately visible on the first page.
     if (rows[0]?.id !== previous?.[0]?.id) page.value = 1;
     page.value = Math.min(page.value, pageCount.value);
+    if (!rows.some((row) => row.id === selectedId.value))
+      selectedId.value = null;
   },
 );
 </script>
-
 <template>
-  <p class="muted caption">
-    {{
-      role === "student"
-        ? "默认展开最新一条申请，其他记录可点击展开。"
-        : "默认展开待审批及生成失败的申请，其他记录可点击展开。"
-    }}
-  </p>
+  <div class="request-table-wrap" tabindex="0" aria-label="请假申请列表">
+    <table class="request-table">
+      <thead>
+        <tr>
+          <th>申请状态</th>
+          <th>事项名称</th>
+          <th>
+            <span class="wide-only">事项时间</span
+            ><span class="compact-only">日期</span>
+          </th>
+          <th>请假原因</th>
+          <th>提交时间</th>
+          <th>审批意见</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr
+          v-for="record in visibleRecords"
+          :key="record.id"
+          class="request-row"
+          :tabindex="busy ? -1 : 0"
+          :aria-label="`查看申请详情：${record.student.name}，${firstTitle(record)}`"
+          :aria-disabled="busy"
+          @click="!busy && (selectedId = record.id)"
+          @keydown.enter.self.prevent="!busy && (selectedId = record.id)"
+          @keydown.space.self.prevent="!busy && (selectedId = record.id)"
+        >
+          <td>
+            <span class="status" :class="record.status">{{
+              statuses[record.status]
+            }}</span
+            ><small v-if="role === 'counselor'" class="row-student"
+              >{{ record.student.name }} ·
+              {{ record.student.student_number }}</small
+            >
+          </td>
+          <td>
+            <button
+              class="name-link cell-ellipsis"
+              :title="firstTitle(record)"
+              :aria-label="`打开申请：${record.student.name}，${firstTitle(record)}`"
+              :disabled="busy"
+              @click.stop="selectedId = record.id"
+            >
+              {{ firstTitle(record) }}
+            </button>
+          </td>
+          <td>
+            <span class="cell-ellipsis wide-only" :title="firstTime(record)">{{
+              firstTime(record)
+            }}</span
+            ><span class="compact-only compact-date">{{
+              firstDate(record)
+            }}</span>
+          </td>
+          <td>
+            <span class="cell-ellipsis" :title="record.reason">{{
+              record.reason
+            }}</span>
+          </td>
+          <td>{{ timestamp(record.created) }}</td>
+          <td>
+            <span class="cell-ellipsis" :title="latestOpinion(record)">{{
+              latestOpinion(record)
+            }}</span>
+          </td>
+          <td>
+            <button
+              class="light"
+              :disabled="busy"
+              :aria-label="`查看详情：${record.student.name}，${firstTitle(record)}`"
+              @click.stop="selectedId = record.id"
+            >
+              查看详情
+            </button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
   <RequestCard
-    v-for="record in visibleRecords"
-    :key="record.id"
-    :request="record"
+    v-if="selected"
+    :key="selected.id"
+    :request="selected"
     :role="role"
     :busy="busy"
     :signature-version="signatureVersion"
-    :expanded="isExpanded(record)"
-    @toggle="toggle(record)"
+    @close="selectedId = null"
     @decision="emit('decision', $event)"
     @retry="emit('retry', $event)"
     @withdraw="emit('withdraw', $event)"
@@ -83,23 +148,3 @@ watch(
     </button>
   </nav>
 </template>
-
-<style>
-.record-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-  width: 100%;
-  text-align: left;
-}
-.record-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 16px;
-}
-</style>

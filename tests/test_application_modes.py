@@ -27,12 +27,14 @@ def test_modes_preview_approval_and_pdf(client,mode,layout,count):
     login(client,'counselor-a')
     preview=client.post('/api/requests/'+row['id']+'/preview',json={}).json()
     text=pdf_text(client.get(f"/api/previews/{preview['id']}/0"))
-    assert '拟同意' in text and '该生因参加学术交流，经辅导员审核' in text
+    assert '审批前预览' in text
+    assert ('该生因参加学术交流，经辅导员审核' if mode=='date_range' else '该生因参加学术交流，于') in text
     result=approve(client,row['id']).json()
     assert len(result['documents'])==count
     for index,doc in enumerate(result['documents']):
         text=pdf_text(client.get('/api/documents/'+doc['id']))
-        assert '拟同意' not in text and '该生因参加学术交流，经辅导员审核' in text
+        assert '拟同意' not in text
+        assert ('该生因参加学术交流，经辅导员审核' if mode=='date_range' else '该生因参加学术交流，于') in text
         if mode=='date_range':
             assert '共 3 天' in text and '组织行为学' not in text
         else:
@@ -90,3 +92,34 @@ def test_existing_sqlite_database_adds_mode_without_losing_requests(tmp_path,mon
             assert 'mode' in {column['name'] for column in inspect(engine).get_columns('leave_requests')}
     finally:
         engine.dispose()
+
+
+def test_items_reason_limit_and_optional_kind(client):
+    login(client)
+    body=mode_payload('items');body['reason']='因'*50
+    for item in body['items']:item.pop('kind')
+    row=submit(client,body)
+    assert all(item['kind']=='other' for item in row['items'])
+    body['reason']='因'*51
+    assert client.post('/api/requests',json=body).status_code==422
+
+
+def test_watermark_uses_earliest_latest_dates_and_single_day(client):
+    from app import main as m
+    from types import SimpleNamespace
+    row=SimpleNamespace(starts='2026-10-22',ends='2026-10-22',snapshot={'name':'李天勤'})
+    assert m.signature_watermark(row)=='仅供李天勤2026.10.22使用'
+    row.ends='2026-10-23'
+    assert m.signature_watermark(row)=='仅供李天勤2026.10.22-2026.10.23使用'
+
+
+def test_items_pdf_uses_requested_wording_without_type_or_typed_signature(client):
+    login(client);body=mode_payload('items','separate')
+    body['reason']='参加学术交流'
+    row=submit(client,body);login(client,'counselor-a')
+    approved=approve(client,row['id']).json()
+    assert approved['approval']['approver']=='counselor-a'
+    text=pdf_text(client.get('/api/documents/'+approved['documents'][0]['id']))
+    assert '该生因参加学术交流，于2026 年 10 月 1 日第 1-2 节请假组织行为学。' in text
+    assert 'counselor-a' not in text and '辅导员签字' in text
+    assert '事项类型' not in text and '志愿者活动' not in text

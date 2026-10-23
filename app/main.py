@@ -139,6 +139,15 @@ class Withdrawal(Base):
     prior_status: Mapped[str] = mapped_column(String(16))
     reason: Mapped[str] = mapped_column(Text)
     at: Mapped[str] = mapped_column(String(40))
+class ApprovalArchive(Base):
+    """Immutable record of an approval returned for review; PDFs are invalidated."""
+    __tablename__ = 'approval_archives'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    request_id: Mapped[str] = mapped_column(ForeignKey('leave_requests.id'), index=True)
+    record: Mapped[dict] = mapped_column(JSON)
+    signature_content: Mapped[bytes | None] = mapped_column(LargeBinary().with_variant(MEDIUMBLOB, 'mysql'), nullable=True)
+    at: Mapped[str] = mapped_column(String(40))
+
 class DirectoryAudit(Base):
     __tablename__ = 'directory_audits'
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -343,7 +352,7 @@ async def lifespan(app):
         retention_worker.stop()
         if worker:
             worker.stop()
-app = FastAPI(title='Ask4LeaveRequest',version='1.0.1',lifespan=lifespan)
+app = FastAPI(title='Ask4LeaveRequest',version='1.1.0',lifespan=lifespan)
 def db_session():
     with Session(engine) as db: yield db
 def current_user(leave_session: str | None = Cookie(default=None), db:Session=Depends(db_session)):
@@ -565,7 +574,7 @@ def signature_image(db:Session=Depends(db_session),user:Person=Depends(current_u
     if not record: raise HTTPException(404,'尚未上传签名')
     return Response(record.content,media_type='image/png')
 class ItemInput(BaseModel):
-    kind: Literal['course','activity','other']
+    kind: Literal['course','activity','other']='other'
     title: str = Field(min_length=1,max_length=200)
     day: date
     time: str = Field(min_length=1,max_length=120)
@@ -588,6 +597,7 @@ class ApplicationInput(BaseModel):
         self.reason=self.reason.strip()
         if not self.reason: raise ValueError('请填写请假原因')
         if self.mode == 'items':
+            if len(self.reason)>50:raise ValueError('请假原因最多 50 字')
             if self.starts is not None or self.ends is not None:
                 raise ValueError('事项模式无需填写起止日期')
             if not self.items:raise ValueError('请至少填写一个请假事项')
@@ -613,6 +623,7 @@ def serialize(db,row):
       'attachments_retained_through':retained_through(row.ends).isoformat(),
       'attachments_expired':attachments_expired(row.ends),
       'attachments':[] if attachments_expired(row.ends) else [{'id':a.id,'name':a.name,'size':a.size} for a in db.scalars(select(Attachment).where(Attachment.request_id==row.id).order_by(Attachment.position))],
+      'history':[a.record for a in db.scalars(select(ApprovalArchive).where(ApprovalArchive.request_id==row.id).order_by(ApprovalArchive.at))],
       'approval':{'approver':approval.approver_name,'outcome':approval.outcome,'opinion':approval.opinion,'at':approval.at} if approval else None,
       'withdrawal':{'actor':withdrawal.actor_name,'role':withdrawal.actor_role,'reason':withdrawal.reason,'at':withdrawal.at} if withdrawal else None,
       'documents':[{'id':d.id,'name':d.name,'sha256':d.digest} for d in db.scalars(select(Document).where(Document.request_id==row.id).order_by(Document.position))] if row.status=='approved' and row.file_status=='ready' else []}
@@ -748,9 +759,10 @@ def chinese_date(value):
     return f'{day.year} 年 {day.month} 月 {day.day} 日'
 
 def signature_watermark(row):
-    days = (date.fromisoformat(row.ends)-date.fromisoformat(row.starts)).days+1
-    if row.mode == 'items':return f"{row.snapshot['name']}-事项请假-{row.starts}"
-    return f"{row.snapshot['name']}-{row.starts}-{days}天"
+    start=row.starts.replace('-', '.')
+    end=row.ends.replace('-', '.')
+    period=start if start==end else f'{start}-{end}'
+    return f"仅供{row.snapshot['name']}{period}使用"
 
 def watermarked_signature(content,label):
     # Burn the restriction into image pixels; the PDF contains no unmarked source image.
@@ -814,11 +826,8 @@ def render_pdf(row,decision,items,signature=None,draft=False):
     if row.mode == 'date_range':
         narrative=f'该生因{reason}，经辅导员审核，{agreement}其于{chinese_date(row.starts)}至{chinese_date(row.ends)}请假，共 {days} 天。'
     elif row.mode == 'items':
-        if len(items)==1:
-            item=items[0]
-            narrative=f'该生因{reason}，经辅导员审核，{agreement}其于{chinese_date(item.day)}（{item.time}）就“{item.title}”{names[item.kind]}请假。'
-        else:
-            narrative=f'该生因{reason}，经辅导员审核，{agreement}其就以下事项请假。'
+        clauses=[f'于{chinese_date(item.day)}{item.time}请假{item.title}' for item in items]
+        narrative=f'该生因{reason}，'+ '；'.join(clauses)+'。'
     else:
         # Preserve existing applications and their historical document wording.
         narrative=f"该生请假事由为{reason}。经辅导员审核，{agreement}其于{period}请假，共 {days} 天。"
@@ -828,7 +837,7 @@ def render_pdf(row,decision,items,signature=None,draft=False):
     if decision.opinion and decision.opinion.strip() not in {'同意','同意。'}:
         narrative+=f'辅导员审批意见为：“{decision.opinion.strip().rstrip("。")}”。'
     story=[Paragraph('请 假 条',title),p(identity),p(narrative)]
-    if len(items)>1:
+    if len(items)>1 and row.mode != 'items':
         story.append(p('请假以下事项：',closing))
         rows=[[p('序号',centered),p('类型',centered),p('请假事项',centered),p('日期',centered),p('节次 / 时间',centered)]]
         for index,item in enumerate(items,1):
@@ -847,8 +856,10 @@ def render_pdf(row,decision,items,signature=None,draft=False):
     signature_row.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'MIDDLE'),
                                       ('LEFTPADDING',(0,0),(-1,-1),0),('RIGHTPADDING',(0,0),(-1,-1),0)]))
     signed_at=datetime.fromisoformat(decision.at).astimezone(ZoneInfo('Asia/Shanghai'))
-    story.append(KeepTogether([Spacer(1,23*mm),signature_row,p(decision.approver_name,signing),
-                               Spacer(1,4*mm),p(f'{signed_at.year} 年 {signed_at.month} 月 {signed_at.day} 日',signing)]))
+    signing_block=[Spacer(1,23*mm),signature_row]
+    if not signature:signing_block.append(p(decision.approver_name,signing))
+    signing_block.extend([Spacer(1,4*mm),p(f'{signed_at.year} 年 {signed_at.month} 月 {signed_at.day} 日',signing)])
+    story.append(KeepTogether(signing_block))
 
     def footer(canvas,doc):
         canvas.saveState();canvas.setFont(body_font,8);canvas.setFillColor(colors.HexColor('#777777'))
@@ -866,22 +877,26 @@ def generate(rid):
         claimed=db.execute(update(Request).where(Request.id==rid,Request.status=='approved',Request.file_status.in_(['not_started','failed'])).values(file_status='generating',generation_error=None)).rowcount
         db.commit()
         if not claimed: return
+        approval_at=None
         try:
             row=db.get(Request,rid); decision=db.get(Decision,rid)
+            if row.status!='approved' or not decision:return
+            approval_at=decision.at
+            signature=db.get(ApprovalSignature,rid)
             items=list(db.scalars(select(Item).where(Item.request_id==rid).order_by(Item.position)))
             groups=[items] if row.layout=='combined' else [[i] for i in items]
+            db.expunge_all();db.rollback()
             generated=[]
             for pos,group in enumerate(groups):
-                signature=db.get(ApprovalSignature,rid)
                 data=render_pdf(row,decision,group,signature.content if signature else None)
                 generated.append(Document(id=str(uuid.uuid4()),request_id=rid,position=pos,name=f'{uuid.uuid4().hex}.pdf',content=data,digest=hashlib.sha256(data).hexdigest()))
             # Revocation can win while rendering; publish only if approval is still current.
-            published=db.execute(update(Request).where(Request.id==rid,Request.status=='approved',Request.file_status=='generating').values(file_status='ready')).rowcount
+            published=db.execute(update(Request).where(Request.id==rid,Request.status=='approved',Request.file_status=='generating',select(Decision.request_id).where(Decision.request_id==rid,Decision.at==approval_at).exists()).values(file_status='ready')).rowcount
             if not published:db.rollback();return
             db.add_all(generated);db.commit()
         except Exception:
             db.rollback()
-            db.execute(update(Request).where(Request.id==rid,Request.status=='approved',Request.file_status=='generating').values(file_status='failed',generation_error='审批已通过，文件生成失败。请检查中文字体与服务日志后重试。'))
+            db.execute(update(Request).where(Request.id==rid,Request.status=='approved',Request.file_status=='generating',select(Decision.request_id).where(Decision.request_id==rid,Decision.at==approval_at).exists()).values(file_status='failed',generation_error='审批已通过，文件生成失败。请检查中文字体与服务日志后重试。'))
             db.commit()
             logging.getLogger(__name__).exception('PDF generation failed for request %s',rid)
 class DecisionInput(BaseModel):
@@ -895,7 +910,8 @@ class DecisionInput(BaseModel):
         return self
 @app.post('/api/requests/{rid}/decision')
 def decide(rid:str,body:DecisionInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):
-    row=authorized(db,rid,user)
+    authorized(db,rid,user)
+    row=db.scalar(select(Request).where(Request.id==rid).with_for_update().execution_options(populate_existing=True))
     if not has_role(user,'counselor') or not db.get(RequestCounselor,(rid,user.id)): raise HTTPException(403,'仅负责该申请的辅导员可审批')
     if row.status!='pending':
         old=db.get(Decision,rid)
@@ -917,6 +933,7 @@ def decide(rid:str,body:DecisionInput,db:Session=Depends(db_session),user:Person
     if preview:
         db.add(ApprovalSignature(request_id=rid,signature_version=preview.signature_version,content=preview.signature_content,
                                  digest=hashlib.sha256(preview.signature_content).hexdigest(),watermark=preview.watermark))
+    db.query(ApprovalPreview).filter(ApprovalPreview.request_id==rid).delete()
     from app.pdf_jobs import async_enabled, enqueue
     if body.outcome=='approved' and async_enabled(): enqueue(db,rid)
     db.commit()
@@ -925,26 +942,49 @@ def decide(rid:str,body:DecisionInput,db:Session=Depends(db_session),user:Person
     return serialize(db,db.get(Request,rid))
 
 class WithdrawalInput(BaseModel):
+    approval_at:str|None=Field(default=None,max_length=40)
     reason:str=Field(default='',max_length=2000)
     role:Literal['student','counselor']|None=None
 
 @app.post('/api/requests/{rid}/withdraw')
 def withdraw(rid:str,body:WithdrawalInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):
-    row=authorized(db,rid,user)
+    authorized(db,rid,user)
+    row=db.scalar(select(Request).where(Request.id==rid).with_for_update().execution_options(populate_existing=True))
     role=body.role or ('student' if has_role(user,'student') and (row.status in {'pending','withdrawn'} or not has_role(user,'counselor')) else 'counselor')
     if not has_role(user,role) or (role=='student' and row.student_id!=user.id) or (role=='counselor' and not db.get(RequestCounselor,(rid,user.id))):
         raise HTTPException(403,'无权以该身份撤回')
     prior='pending' if role=='student' else 'approved'
-    target='withdrawn' if role=='student' else 'revoked'
+    target='withdrawn' if role=='student' else 'pending'
     reason=body.reason.strip()
     if row.status!=prior:
         old=db.get(Withdrawal,rid)
         if row.status==target and old and old.actor_id==user.id and old.reason==reason:return serialize(db,row)
         raise HTTPException(409,'学生只能撤回待审批申请，辅导员只能撤回已通过请假条')
-    changed=db.execute(update(Request).where(Request.id==rid,Request.status==prior).values(status=target,file_status='cancelled',generation_error=None)).rowcount
+    if role=='counselor' and body.approval_at and db.get(Decision,rid).at!=body.approval_at:
+        raise HTTPException(409,'审批记录已更新，请刷新后再撤回')
+    changed=db.execute(update(Request).where(Request.id==rid,Request.status==prior).values(status=target,file_status='cancelled' if role=='student' else 'not_started',generation_error=None)).rowcount
     if not changed:db.rollback();raise HTTPException(409,'申请状态已变化，请刷新')
+    stamp=datetime.now(timezone.utc).isoformat()
+    if role=='counselor':
+        decision=db.get(Decision,rid)
+        signature=db.get(ApprovalSignature,rid)
+        record={'approval':{'approver':decision.approver_name,'approver_id':decision.approver_id,
+                            'outcome':decision.outcome,'opinion':decision.opinion,'at':decision.at},
+                'withdrawal':{'actor':user.name,'actor_id':user.id,'role':role,'reason':reason,'at':stamp},
+                'documents':[{'id':d.id,'sha256':d.digest} for d in db.scalars(select(Document).where(Document.request_id==rid))],
+                'signature':{'version':signature.signature_version,'sha256':signature.digest,'watermark':signature.watermark} if signature else None}
+        db.add(ApprovalArchive(id=str(uuid.uuid4()),request_id=rid,record=record,
+                              signature_content=signature.content if signature else None,at=stamp))
+        # Old URLs and preview IDs must never become valid after reapproval.
+        db.query(Document).filter(Document.request_id==rid).delete()
+        db.query(ApprovalSignature).filter(ApprovalSignature.request_id==rid).delete()
+        db.query(Decision).filter(Decision.request_id==rid).delete()
+        # Deleting the job invalidates its lease token, including running workers.
+        db.query(PDFJob).filter(PDFJob.request_id==rid).delete()
+    db.query(ApprovalPreview).filter(ApprovalPreview.request_id==rid).delete()
+    db.query(Withdrawal).filter(Withdrawal.request_id==rid).delete()
     db.add(Withdrawal(request_id=rid,actor_id=user.id,actor_name=user.name,actor_role=role,
-                      prior_status=prior,reason=reason,at=datetime.now(timezone.utc).isoformat()))
+                      prior_status=prior,reason=reason,at=stamp))
     db.commit();db.expire_all()
     return serialize(db,db.get(Request,rid))
 

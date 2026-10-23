@@ -8,6 +8,7 @@ const props = defineProps({
   maxEndDate: String,
 });
 const attachments = ref([]);
+const confirmation = ref(null);
 const preparing = ref(false);
 const preparationMessage = ref("");
 function chooseFiles(event) {
@@ -35,22 +36,18 @@ function encodeFile(file) {
 const emit = defineEmits(["submit", "message"]);
 const newItem = () => ({
   id: crypto.randomUUID(),
-  kind: "course",
   title: "",
   day: "",
   time: "",
 });
 const form = reactive({
-  mode: "date_range",
-  starts: "",
-  ends: "",
   reason: "",
   layout: "combined",
   items: [newItem()],
 });
 const reasonPreview = computed(() => {
   const reason = form.reason.trim().replace(/[。.!！?？;；]+$/u, "");
-  return `将呈现为：该生因${reason || "【请假事由】"}……`;
+  return `将呈现为：该生因${reason || "【请假原因】"}……`;
 });
 // Keep the same key after network failures so retrying does not duplicate a request.
 const idempotencyKey = crypto.randomUUID();
@@ -62,17 +59,21 @@ function removeItem(index) {
   if (form.items.length === 1) return emit("message", "至少保留一个请假事项");
   form.items.splice(index, 1);
 }
-async function submit() {
-  if (props.busy || preparing.value) return;
+function review() {
   if (
-    form.mode === "date_range" &&
-    props.maxEndDate &&
-    form.ends > props.maxEndDate
-  )
+    !form.reason.trim() ||
+    form.items.some((item) => !item.title.trim() || !item.time.trim())
+  ) {
     return emit(
       "message",
-      `请假结束日期不得超过当前日期后三个月（最晚 ${props.maxEndDate}）`,
+      "请填写请假原因、事项名称和时间或节次，不能只输入空格",
     );
+  }
+  emit("message", "");
+  confirmation.value.showModal();
+}
+async function submit() {
+  if (props.busy || preparing.value) return;
   preparing.value = true;
   try {
     const files = [];
@@ -80,24 +81,18 @@ async function submit() {
       preparationMessage.value = `正在读取附件 ${index + 1}/${attachments.value.length}…`;
       files.push(await encodeFile(file));
     }
+    confirmation.value.close();
     emit("submit", {
       attachments: files,
-      mode: form.mode,
-      ...(form.mode === "date_range"
-        ? { starts: form.starts, ends: form.ends }
-        : {}),
-      reason: form.reason,
-      layout: form.mode === "date_range" ? "combined" : form.layout,
+      mode: "items",
+      reason: form.reason.trim(),
+      layout: form.layout,
       idempotency_key: idempotencyKey,
-      items:
-        form.mode === "items"
-          ? form.items.map(({ kind, title, day, time }) => ({
-              kind,
-              title,
-              day,
-              time,
-            }))
-          : [],
+      items: form.items.map(({ title, day, time }) => ({
+        title: title.trim(),
+        day,
+        time: time.trim(),
+      })),
     });
   } catch (error) {
     emit("message", error.message);
@@ -112,64 +107,106 @@ async function submit() {
   <section id="apply" class="panel">
     <div class="section-title">
       <h2>新建请假申请</h2>
-      <span>01 — 填写信息</span>
     </div>
     <p id="profile" class="muted">{{ profile }}</p>
-    <form id="form" @submit.prevent="submit">
+    <form id="form" @submit.prevent="review">
       <fieldset class="form-fields" :disabled="busy || preparing">
-        <fieldset>
-          <legend>请假方式</legend>
+        <div class="application-columns">
+          <section class="reason-section">
+            <h3>请假原因</h3>
+            <label class="sr-only" for="reason">请假原因</label
+            ><textarea
+              id="reason"
+              v-model="form.reason"
+              name="reason"
+              placeholder="请简要说明请假原因"
+              maxlength="50"
+              rows="2"
+              required
+            ></textarea>
+            <p class="caption reason-count" aria-live="polite">
+              {{ form.reason.length }}/50
+            </p>
+            <p class="caption reason-preview" aria-live="polite">
+              {{ reasonPreview }}
+            </p>
+          </section>
+          <section class="items-section">
+            <div class="section-title">
+              <h3>请假事项</h3>
+              <button id="add" type="button" class="light" @click="addItem">
+                ＋ 添加事项
+              </button>
+            </div>
+            <div id="items">
+              <div
+                v-for="(item, index) in form.items"
+                :key="item.id"
+                class="item"
+              >
+                <div class="item-head">
+                  <b>请假事项 {{ index + 1 }}</b
+                  ><button
+                    type="button"
+                    aria-label="删除此事项"
+                    @click="removeItem(index)"
+                  >
+                    删除
+                  </button>
+                </div>
+                <div class="item-fields">
+                  <label
+                    >日期<input
+                      v-model="item.day"
+                      name="day"
+                      type="date"
+                      :max="maxEndDate"
+                      required
+                  /></label>
+                  <label
+                    >时间或节次<input
+                      v-model="item.time"
+                      name="time"
+                      placeholder="例如：14:00–16:00"
+                      maxlength="120"
+                      required
+                  /></label>
+                  <label
+                    >事项名称<input
+                      v-model="item.title"
+                      name="title"
+                      placeholder="例如：组织行为学课程，才萃团校活动"
+                      maxlength="200"
+                      required
+                  /></label>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+        <fieldset class="layout-options">
+          <legend>请假条生成方式</legend>
           <label class="radio"
             ><input
-              v-model="form.mode"
+              v-model="form.layout"
               type="radio"
-              value="date_range"
-            />按起止日期请假</label
+              name="layout"
+              value="combined"
+            />合并生成 · 所有事项放在同一份请假条</label
           >
           <label class="radio"
             ><input
-              v-model="form.mode"
+              v-model="form.layout"
               type="radio"
-              value="items"
-            />按具体事项请假（请假条包含具体课程、活动等）</label
+              name="layout"
+              value="separate"
+            />分别生成 · 每个事项一份请假条</label
           >
         </fieldset>
-        <div v-if="form.mode === 'date_range'" class="two">
-          <label
-            >开始日期<input
-              v-model="form.starts"
-              name="starts"
-              type="date"
-              required
-          /></label>
-          <label
-            >结束日期<input
-              v-model="form.ends"
-              name="ends"
-              type="date"
-              :max="maxEndDate"
-              required
-          /></label>
-        </div>
-        <p v-if="maxEndDate" class="caption">
-          请假日期最晚为 {{ maxEndDate }}，按北京时间加三个自然月计算。
-        </p>
-        <label
-          >请假原因<textarea
-            v-model="form.reason"
-            name="reason"
-            placeholder="请简要说明请假原因"
-            maxlength="4000"
-            rows="3"
-            required
-          ></textarea>
-        </label>
-        <p class="caption" aria-live="polite">{{ reasonPreview }}</p>
-        <fieldset>
+        <fieldset class="attachment-fields">
           <legend>附件（选填，{{ attachments.length }}/3）</legend>
           <p class="caption">
-            每个附件最多 5
-            MB，作为审批材料单独保存，不合并进请假条。请假结束日期（或最晚事项日期）一个自然月后自动删除附件。
+            最多 3 个，每个 5 MB。最晚事项日期一个自然月后自动删除，仅用于审批。
           </p>
           <input
             type="file"
@@ -195,83 +232,9 @@ async function submit() {
             {{ preparationMessage }}
           </p>
         </fieldset>
-        <div v-if="form.mode === 'items'" class="section-title">
-          <h3>请假事项</h3>
-          <button id="add" type="button" class="light" @click="addItem">
-            ＋ 添加事项
-          </button>
-        </div>
-        <div v-if="form.mode === 'items'" id="items">
-          <div v-for="(item, index) in form.items" :key="item.id" class="item">
-            <div class="item-head">
-              <b>请假事项 {{ index + 1 }}</b
-              ><button
-                type="button"
-                aria-label="删除此事项"
-                @click="removeItem(index)"
-              >
-                删除
-              </button>
-            </div>
-            <div class="two">
-              <label
-                >事项类型<select v-model="item.kind" name="kind">
-                  <option value="course">课程</option>
-                  <option value="activity">活动</option>
-                  <option value="other">其他</option>
-                </select></label
-              >
-              <label
-                >事项名称<input
-                  v-model="item.title"
-                  name="title"
-                  placeholder="例如：学术讲座"
-                  maxlength="200"
-                  required
-              /></label>
-            </div>
-            <div class="two">
-              <label
-                >日期<input
-                  v-model="item.day"
-                  name="day"
-                  type="date"
-                  :max="maxEndDate"
-                  required
-              /></label>
-              <label
-                >节次或时间<input
-                  v-model="item.time"
-                  name="time"
-                  placeholder="例如：14:00–16:00"
-                  maxlength="120"
-                  required
-              /></label>
-            </div>
-          </div>
-        </div>
-        <fieldset v-if="form.mode === 'items'">
-          <legend>请假条生成方式</legend>
-          <label class="radio"
-            ><input
-              v-model="form.layout"
-              type="radio"
-              name="layout"
-              value="combined"
-            />合并生成 · 所有事项放在同一份请假条</label
-          >
-          <label class="radio"
-            ><input
-              v-model="form.layout"
-              type="radio"
-              name="layout"
-              value="separate"
-            />分别生成 · 每个事项一份请假条</label
-          >
-        </fieldset>
         <p class="muted">由系统分配给负责你的辅导员，审批通过后自动生成。</p>
         <button id="submit" class="primary" :disabled="busy || preparing">
-          {{ busy || preparing ? "正在处理…" : "提交申请" }}
+          {{ busy || preparing ? "正在处理…" : "预览并提交" }}
         </button>
         <p
           v-if="message"
@@ -284,5 +247,55 @@ async function submit() {
         </p>
       </fieldset>
     </form>
+    <dialog
+      ref="confirmation"
+      class="preview-dialog submission-dialog"
+      aria-labelledby="submit-preview-title"
+    >
+      <div class="dialog-header">
+        <h2 id="submit-preview-title">提交前预览</h2>
+        <button
+          type="button"
+          class="light"
+          :disabled="busy || preparing"
+          @click="confirmation.close()"
+        >
+          关闭
+        </button>
+      </div>
+      <div class="dialog-body">
+        <p>{{ profile }}</p>
+        <p class="caption">
+          以下为申请内容预览，尚未提交，也不是审批通过的请假凭证。
+        </p>
+        <p>
+          该生因{{
+            form.reason.trim().replace(/[。.!！?？;；]+$/u, "")
+          }}，<template v-for="(item, index) in form.items" :key="item.id"
+            >{{ index ? "；" : "" }}于{{ item.day }}{{ item.time }}请假{{
+              item.title
+            }}</template
+          >。
+        </p>
+        <ol>
+          <li v-for="item in form.items" :key="item.id">
+            {{ item.day }} · {{ item.time }} · {{ item.title }}
+          </li>
+        </ol>
+        <p>
+          生成方式：{{
+            form.layout === "combined" ? "合并生成" : "每个事项分别生成"
+          }}
+        </p>
+        <p>
+          附件：{{ attachments.map((file) => file.name).join("、") || "无" }}
+        </p>
+      </div>
+      <div class="dialog-footer">
+        <button type="button" :disabled="busy || preparing" @click="submit">
+          {{ preparing ? preparationMessage || "正在准备…" : "确认提交申请" }}
+        </button>
+      </div>
+    </dialog>
   </section>
 </template>

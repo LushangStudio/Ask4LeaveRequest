@@ -265,7 +265,7 @@ def test_counselor_uis_name_is_snapshotted_in_approval_and_pdf_only(production):
         row=c.get('/api/requests/'+rid).json()
     assert row['file_status']=='ready',row
     pdf=c.get('/api/documents/'+row['documents'][0]['id'])
-    assert 'UIS辅导员实名' in ''.join(p.extract_text() for p in PdfReader(io.BytesIO(pdf.content)).pages)
+    assert 'UIS辅导员实名' not in ''.join(p.extract_text() for p in PdfReader(io.BytesIO(pdf.content)).pages)
     with Session(m.engine) as db:
         assert db.get(m.Person,'staff-1').name==''
         assert 'counselors' not in db.get(m.DirectoryState,1).directory

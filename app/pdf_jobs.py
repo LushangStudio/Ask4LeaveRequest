@@ -92,6 +92,8 @@ def run_one(engine):
             documents.append(m.Document(id=str(uuid.uuid4()), request_id=rid, position=position,
                 name=f'{uuid.uuid4().hex}.pdf', content=data, digest=hashlib.sha256(data).hexdigest()))
         with Session(engine) as db:
+            # Match withdrawal/approval lock order: request, then job.
+            db.scalar(select(m.Request).where(m.Request.id==rid).with_for_update())
             # A replacement worker owns a new token. An expired/stale renderer
             # cannot publish, even if it eventually finishes successfully.
             owned = db.execute(update(m.PDFJob).where(m.PDFJob.request_id==rid,
@@ -109,6 +111,7 @@ def run_one(engine):
     except Exception:
         logger.exception('PDF background job failed for request %s', rid)
         with Session(engine) as db:
+            db.scalar(select(m.Request).where(m.Request.id==rid).with_for_update())
             retry = attempts < MAX_ATTEMPTS
             owned = db.execute(update(m.PDFJob).where(m.PDFJob.request_id==rid,
                 m.PDFJob.token==token,m.PDFJob.state=='running')

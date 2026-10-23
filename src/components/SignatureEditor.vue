@@ -4,6 +4,7 @@ import { api, apiUrl } from "../api.js";
 
 const emit = defineEmits(["saved"]);
 const info = ref(null);
+const expanded = ref(false);
 const source = ref("");
 const loaded = ref(null);
 const stage = ref(null);
@@ -205,97 +206,107 @@ async function save() {
   <section class="panel signature-panel">
     <div class="section-title">
       <div>
-        <small>COUNSELOR SIGNATURE</small>
         <h2>我的审批签名</h2>
       </div>
       <span class="status" :class="{ approved: info?.configured }">{{
         info?.configured ? "已设置" : "待设置"
       }}</span>
-    </div>
-    <p class="muted">
-      上传手写签名截图，拖动选区自由裁切。每次审批会自动加入请假人、起始日期和请假天数的纯黑点阵水印。
-    </p>
-    <img
-      v-if="info?.configured && !source"
-      class="saved-signature"
-      :src="apiUrl(`signature/image?v=${info.version}`)"
-      alt="当前保存的个人签名"
-    />
-    <label class="upload-label"
-      >{{ info?.configured ? "更换签名截图" : "选择签名截图"
-      }}<input
-        type="file"
-        accept="image/png,image/jpeg,image/webp"
-        :disabled="saving"
-        @change="choose"
-    /></label>
-    <p class="muted caption">
-      PNG / JPEG / WebP · 最大 3 MiB · 仅保存裁切后的图片
-    </p>
-    <template v-if="source">
-      <p class="caption">
-        拖动空白处重新选区；拖动框内移动；拖动四角调整。也可输入像素坐标。
-      </p>
-      <div
-        ref="stage"
-        class="crop-stage"
-        @pointerdown.prevent="start"
-        @pointermove="move"
-        @pointerup="end"
-        @pointercancel="end"
+      <button
+        class="light"
+        :aria-expanded="!info?.configured || expanded"
+        aria-controls="signature-editor"
+        @click="expanded = !expanded"
+        v-if="info?.configured"
       >
-        <img :src="source" alt="待裁切的签名截图" draggable="false" />
-        <div class="crop-box" :style="cropStyle">
-          <span
-            v-for="corner in ['nw', 'ne', 'sw', 'se']"
-            :key="corner"
-            class="crop-handle"
-            :class="corner"
-            :data-handle="corner"
-          ></span>
-        </div>
-      </div>
-      <div class="crop-values">
-        <label
-          v-for="(label, key) in {
-            x: '左边距',
-            y: '上边距',
-            w: '宽度',
-            h: '高度',
-          }"
-          :key="key"
-          >{{ label
-          }}<input
-            v-model.number="crop[key]"
-            type="number"
-            min="0"
-            :disabled="saving"
-            @change="clamp"
-        /></label>
-      </div>
-      <p class="caption">裁切结果</p>
+        {{ expanded ? "收起签名设置" : "展开签名设置" }}
+      </button>
+    </div>
+    <div id="signature-editor" v-show="!info?.configured || expanded">
+      <p class="muted">
+        上传手写签名截图，拖动选区自由裁切。每次审批会自动加入请假人、最早与最晚请假日期的纯黑点阵水印。
+      </p>
       <img
-        v-if="cropImage"
-        class="cropped-signature"
-        :src="cropImage"
-        alt="裁切后的签名"
+        v-if="info?.configured && !source"
+        class="saved-signature"
+        :src="apiUrl(`signature/image?v=${info.version}`)"
+        alt="当前保存的个人签名"
       />
-      <div class="actions">
-        <button :disabled="saving || !cropImage" @click="save">
-          {{ saving ? "保存中…" : "保存裁切签名" }}</button
-        ><button class="light" :disabled="saving" @click="reset">
-          重置选区
-        </button>
-      </div>
-    </template>
-    <p v-if="info?.updated" class="muted caption">
-      最近保存：{{
-        new Date(info.updated).toLocaleString("zh-CN", {
-          timeZone: "Asia/Shanghai",
-        })
-      }}
-      · 更换签名不影响历史审批
-    </p>
+      <label class="upload-label"
+        >{{ info?.configured ? "更换签名截图" : "选择签名截图"
+        }}<input
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          :disabled="saving"
+          @change="choose"
+      /></label>
+      <p class="muted caption">
+        PNG / JPEG / WebP · 最大 3 MiB · 仅保存裁切后的图片
+      </p>
+      <template v-if="source">
+        <p class="caption">
+          拖动空白处重新选区；拖动框内移动；拖动四角调整。也可输入像素坐标。
+        </p>
+        <div
+          ref="stage"
+          class="crop-stage"
+          @pointerdown.prevent="start"
+          @pointermove="move"
+          @pointerup="end"
+          @pointercancel="end"
+        >
+          <img :src="source" alt="待裁切的签名截图" draggable="false" />
+          <div class="crop-box" :style="cropStyle">
+            <span
+              v-for="corner in ['nw', 'ne', 'sw', 'se']"
+              :key="corner"
+              class="crop-handle"
+              :class="corner"
+              :data-handle="corner"
+            ></span>
+          </div>
+        </div>
+        <div class="crop-values">
+          <label
+            v-for="(label, key) in {
+              x: '左边距',
+              y: '上边距',
+              w: '宽度',
+              h: '高度',
+            }"
+            :key="key"
+            >{{ label
+            }}<input
+              v-model.number="crop[key]"
+              type="number"
+              min="0"
+              :disabled="saving"
+              @change="clamp"
+          /></label>
+        </div>
+        <p class="caption">裁切结果</p>
+        <img
+          v-if="cropImage"
+          class="cropped-signature"
+          :src="cropImage"
+          alt="裁切后的签名"
+        />
+        <div class="actions">
+          <button :disabled="saving || !cropImage" @click="save">
+            {{ saving ? "保存中…" : "保存裁切签名" }}</button
+          ><button class="light" :disabled="saving" @click="reset">
+            重置选区
+          </button>
+        </div>
+      </template>
+      <p v-if="info?.updated" class="muted caption">
+        最近保存：{{
+          new Date(info.updated).toLocaleString("zh-CN", {
+            timeZone: "Asia/Shanghai",
+          })
+        }}
+        · 更换签名不影响历史审批
+      </p>
+    </div>
     <p v-if="error" role="alert" class="inline-error">{{ error }}</p>
   </section>
 </template>
