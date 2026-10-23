@@ -10,7 +10,10 @@ function ensurePdfWorker() {
     GlobalWorkerOptions.workerPort = new PdfWorker();
   }
 }
-const props = defineProps({ url: { type: String, required: true } });
+const props = defineProps({
+  url: { type: String, required: true },
+  blob: { type: Blob, required: true },
+});
 const emit = defineEmits(["loaded", "error"]);
 const holder = ref(null);
 const pages = ref([]);
@@ -47,7 +50,11 @@ async function render() {
   await nextTick();
   try {
     ensurePdfWorker();
-    const loadingTask = getDocument({ url, isEvalSupported: false });
+    // Read the existing Blob directly: WebVPN intercepts XHR even for blob URLs.
+    // A fresh buffer is needed each time because PDF.js transfers it to its worker.
+    const data = new Uint8Array(await props.blob.arrayBuffer());
+    if (version !== generation) return;
+    const loadingTask = getDocument({ data, isEvalSupported: false });
     task = loadingTask;
     const pdf = await loadingTask.promise;
     if (version !== generation) return;

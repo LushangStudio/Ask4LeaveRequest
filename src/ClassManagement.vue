@@ -126,30 +126,50 @@ function requestRefresh() {
   if (dirty.value) refreshDialog.value.showModal();
   else refresh();
 }
-function add() {
-  if (active.value === "students") {
-    editStudent();
-    return;
-  }
-  const blank =
-    active.value === "classes"
-      ? {
-          class_id: crypto.randomUUID(),
-          name: "",
-          grade: "",
-          department: "",
-          counselor_ids_text: "",
-        }
-      : {
-          user_id: "",
-          major: "",
-          class_id: directory.value.classes[0]?.class_id || "",
-        };
-  directory.value[active.value].push(blank);
-  status.value = "";
+const classDialog = ref(null);
+const editingClass = ref(null);
+const classDraft = ref({});
+const classPage = ref(1);
+const classPages = computed(() =>
+  Math.max(1, Math.ceil((directory.value?.classes.length || 0) / pageSize)),
+);
+const visibleClasses = computed(() =>
+  (directory.value?.classes || []).slice(
+    (classPage.value - 1) * pageSize,
+    classPage.value * pageSize,
+  ),
+);
+watch(classPages, (count) => {
+  classPage.value = Math.min(classPage.value, count);
+});
+function editClass(row = null) {
+  editingClass.value = row;
+  classDraft.value = row
+    ? { ...row }
+    : {
+        class_id: crypto.randomUUID(),
+        name: "",
+        grade: "",
+        department: "",
+        counselor_ids_text: "",
+      };
+  classDialog.value.showModal();
 }
-function remove(index) {
-  directory.value[active.value].splice(index, 1);
+function applyClass() {
+  if (editingClass.value) Object.assign(editingClass.value, classDraft.value);
+  else {
+    directory.value.classes.push({ ...classDraft.value });
+    classPage.value = classPages.value;
+  }
+  status.value = "班级编辑已加入待保存更改，请点击保存全部更改。";
+  classDialog.value.close();
+}
+function add() {
+  if (active.value === "students") editStudent();
+  else editClass();
+}
+function removeClass(row) {
+  directory.value.classes.splice(directory.value.classes.indexOf(row), 1);
   status.value = "";
 }
 async function save() {
@@ -349,46 +369,81 @@ onMounted(async () => {
                   : "学工号必须与UIS一致。兼任学生和辅导员时，两处填写相同学工号；师生姓名均从UIS登录获取。"
               }}
             </p>
-            <template v-if="active === 'classes'">
-              <div
-                v-for="(row, index) in directory.classes"
-                :key="`${active}-${index}`"
-                class="item admin-row"
-              >
-                <div class="item-head">
-                  <b
-                    >{{ tabs.find((t) => t.key === active).label }}
-                    {{ index + 1 }}</b
-                  ><button type="button" class="danger" @click="remove(index)">
-                    删除此{{ tabs.find((t) => t.key === active).label }}
-                  </button>
-                </div>
-                <template v-if="active === 'classes'"
-                  ><div class="two">
-                    <label
-                      >班级名称<input
-                        v-model="row.name"
-                        required
-                        maxlength="80"
-                    /></label>
-                    <label
-                      >年级<input v-model="row.grade" required maxlength="20"
-                    /></label>
-                    <label
-                      >院系<input
-                        v-model="row.department"
-                        required
-                        maxlength="80"
-                    /></label>
-                  </div>
-                  <label
-                    >辅导员学工号（英文逗号分隔）<input
-                      v-model="row.counselor_ids_text"
-                      required
-                      placeholder="例如：STAFF001, STAFF002" /></label
-                ></template>
+            <section v-if="active === 'classes'" aria-label="班级管理列表">
+              <p class="caption">
+                共 {{ directory.classes.length }} 个班级 · 每页 50 个
+              </p>
+              <div class="student-table-wrap">
+                <table class="student-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">班级名称</th>
+                      <th scope="col">年级</th>
+                      <th scope="col">院系</th>
+                      <th scope="col">辅导员学工号</th>
+                      <th scope="col">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in visibleClasses" :key="row.class_id">
+                      <td>{{ row.name }}</td>
+                      <td>{{ row.grade }}</td>
+                      <td>{{ row.department }}</td>
+                      <td>{{ row.counselor_ids_text }}</td>
+                      <td class="student-row-actions">
+                        <button
+                          type="button"
+                          class="light"
+                          :aria-label="'编辑班级 ' + row.name"
+                          @click="editClass(row)"
+                        >
+                          编辑</button
+                        ><button
+                          type="button"
+                          class="danger"
+                          :aria-label="'删除班级 ' + row.name"
+                          @click="removeClass(row)"
+                        >
+                          删除
+                        </button>
+                      </td>
+                    </tr>
+                    <tr v-if="!visibleClasses.length">
+                      <td colspan="5" class="empty">尚无班级</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
-            </template>
+              <nav class="student-pagination" aria-label="班级名单分页">
+                <button
+                  type="button"
+                  class="light"
+                  :disabled="classPage === 1"
+                  @click="classPage--"
+                >
+                  上一页
+                </button>
+                <label
+                  >页码<select v-model.number="classPage">
+                    <option
+                      v-for="page in classPages"
+                      :key="page"
+                      :value="page"
+                    >
+                      第 {{ page }} / {{ classPages }} 页
+                    </option>
+                  </select></label
+                >
+                <button
+                  type="button"
+                  class="light"
+                  :disabled="classPage === classPages"
+                  @click="classPage++"
+                >
+                  下一页
+                </button>
+              </nav>
+            </section>
             <section v-else class="student-directory" aria-label="学生管理列表">
               <div class="student-filters">
                 <label
@@ -522,6 +577,45 @@ onMounted(async () => {
           </fieldset>
         </form>
       </section>
+      <dialog
+        ref="classDialog"
+        class="preview-dialog feedback-dialog"
+        aria-labelledby="class-edit-title"
+      >
+        <h2 id="class-edit-title">
+          {{ editingClass ? "编辑班级" : "添加班级" }}
+        </h2>
+        <form @submit.prevent="applyClass">
+          <label
+            >班级名称<input
+              v-model.trim="classDraft.name"
+              required
+              maxlength="80"
+          /></label>
+          <label
+            >年级<input v-model.trim="classDraft.grade" required maxlength="20"
+          /></label>
+          <label
+            >院系<input
+              v-model.trim="classDraft.department"
+              required
+              maxlength="80"
+          /></label>
+          <label
+            >辅导员学工号（英文逗号分隔）<input
+              v-model.trim="classDraft.counselor_ids_text"
+              required
+              placeholder="例如：STAFF001, STAFF002"
+          /></label>
+          <p class="caption">确认后请保存全部更改，才会更新服务器名单。</p>
+          <div class="actions">
+            <button>确认编辑</button
+            ><button type="button" class="light" @click="classDialog.close()">
+              取消
+            </button>
+          </div>
+        </form>
+      </dialog>
       <dialog
         ref="studentDialog"
         class="preview-dialog feedback-dialog"

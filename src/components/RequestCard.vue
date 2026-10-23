@@ -341,7 +341,11 @@ const fileStatuses = {
               请假条 {{ index + 1 }} {{ seen.has(index) ? "✓" : "" }}
             </button>
           </div>
-          <PdfPreview :url="previewUrls[selected]" @loaded="rendered" />
+          <PdfPreview
+            :url="previewUrls[selected]"
+            :blob="previewBlobs[selected]"
+            @loaded="rendered"
+          />
           <SavePdf
             :source-url="
               viewingDocument
