@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch, nextTick } from "vue";
 import { api, apiUrl } from "./api.js";
 import AccountMenu from "./components/AccountMenu.vue";
 import FeedbackDialog from "./components/FeedbackDialog.vue";
@@ -22,10 +22,72 @@ const dirty = computed(
   () => directory.value && JSON.stringify(directory.value) !== original.value,
 );
 const workspaceUrl = new URL("../", window.location.href).href;
-const studentFields = {
-  user_id: "学号",
-  major: "专业",
-};
+const studentClass = ref("");
+const studentMajor = ref("");
+const studentPage = ref(1);
+const pageSize = 50;
+const studentDialog = ref(null);
+const editingStudent = ref(null);
+const studentDraft = ref({ user_id: "", major: "", class_id: "" });
+const majors = computed(() =>
+  [
+    ...new Set(
+      (directory.value?.students || []).map((s) => s.major).filter(Boolean),
+    ),
+  ].sort((a, b) => a.localeCompare(b, "zh-CN")),
+);
+const filteredStudents = computed(() =>
+  (directory.value?.students || []).filter(
+    (s) =>
+      (!studentClass.value || s.class_id === studentClass.value) &&
+      (!studentMajor.value || s.major === studentMajor.value),
+  ),
+);
+const studentPages = computed(() =>
+  Math.max(1, Math.ceil(filteredStudents.value.length / pageSize)),
+);
+const visibleStudents = computed(() =>
+  filteredStudents.value.slice(
+    (studentPage.value - 1) * pageSize,
+    studentPage.value * pageSize,
+  ),
+);
+watch([studentClass, studentMajor], () => {
+  studentPage.value = 1;
+});
+watch(studentPages, (count) => {
+  studentPage.value = Math.min(studentPage.value, count);
+});
+function editStudent(row = null) {
+  editingStudent.value = row;
+  studentDraft.value = row
+    ? { ...row }
+    : {
+        user_id: "",
+        major: studentMajor.value,
+        class_id:
+          studentClass.value || directory.value.classes[0]?.class_id || "",
+      };
+  studentDialog.value.showModal();
+}
+async function applyStudent() {
+  if (editingStudent.value)
+    Object.assign(editingStudent.value, studentDraft.value);
+  else {
+    directory.value.students.push({ ...studentDraft.value });
+    studentClass.value = "";
+    studentMajor.value = "";
+    // Filter watchers reset first; show the newly added student afterwards.
+    await nextTick();
+    studentPage.value = studentPages.value;
+  }
+  status.value = "学生编辑已加入待保存更改，请点击保存全部更改。";
+  studentDialog.value.close();
+}
+function removeStudent(row) {
+  directory.value.students.splice(directory.value.students.indexOf(row), 1);
+  status.value = "";
+}
 const tabs = [
   { key: "classes", label: "班级" },
   { key: "students", label: "学生" },
@@ -65,6 +127,10 @@ function requestRefresh() {
   else refresh();
 }
 function add() {
+  if (active.value === "students") {
+    editStudent();
+    return;
+  }
   const blank =
     active.value === "classes"
       ? {
@@ -240,8 +306,8 @@ onMounted(async () => {
         </div>
         <form @submit.prevent="save">
           <fieldset class="form-fields" :disabled="busy">
-            <section v-if="active === 'students'" class="item">
-              <h3>批量导入学生</h3>
+            <details v-if="active === 'students'" class="item student-import">
+              <summary>批量导入学生</summary>
               <p class="caption">
                 先选择导入班级，每行一人：学号,专业。使用英文逗号；同学号更新专业及所属班级。先保存当前编辑，再导入。
               </p>
@@ -275,7 +341,7 @@ onMounted(async () => {
               >
                 校验并预览导入
               </button>
-            </section>
+            </details>
             <p class="caption">
               {{
                 active === "classes"
@@ -283,65 +349,160 @@ onMounted(async () => {
                   : "学工号必须与UIS一致。兼任学生和辅导员时，两处填写相同学工号；师生姓名均从UIS登录获取。"
               }}
             </p>
-            <div
-              v-for="(row, index) in directory[active]"
-              :key="`${active}-${index}`"
-              class="item admin-row"
-            >
-              <div class="item-head">
-                <b
-                  >{{ tabs.find((t) => t.key === active).label }}
-                  {{ index + 1 }}</b
-                ><button type="button" class="danger" @click="remove(index)">
-                  删除此{{ tabs.find((t) => t.key === active).label }}
+            <template v-if="active === 'classes'">
+              <div
+                v-for="(row, index) in directory.classes"
+                :key="`${active}-${index}`"
+                class="item admin-row"
+              >
+                <div class="item-head">
+                  <b
+                    >{{ tabs.find((t) => t.key === active).label }}
+                    {{ index + 1 }}</b
+                  ><button type="button" class="danger" @click="remove(index)">
+                    删除此{{ tabs.find((t) => t.key === active).label }}
+                  </button>
+                </div>
+                <template v-if="active === 'classes'"
+                  ><div class="two">
+                    <label
+                      >班级名称<input
+                        v-model="row.name"
+                        required
+                        maxlength="80"
+                    /></label>
+                    <label
+                      >年级<input v-model="row.grade" required maxlength="20"
+                    /></label>
+                    <label
+                      >院系<input
+                        v-model="row.department"
+                        required
+                        maxlength="80"
+                    /></label>
+                  </div>
+                  <label
+                    >辅导员学工号（英文逗号分隔）<input
+                      v-model="row.counselor_ids_text"
+                      required
+                      placeholder="例如：STAFF001, STAFF002" /></label
+                ></template>
+              </div>
+            </template>
+            <section v-else class="student-directory" aria-label="学生管理列表">
+              <div class="student-filters">
+                <label
+                  >按班级筛选<select v-model="studentClass">
+                    <option value="">全部班级</option>
+                    <option
+                      v-for="group in directory.classes"
+                      :key="group.class_id"
+                      :value="group.class_id"
+                    >
+                      {{ classLabel(group) }}
+                    </option>
+                  </select></label
+                >
+                <label
+                  >按专业筛选<select v-model="studentMajor">
+                    <option value="">全部专业</option>
+                    <option v-for="major in majors" :key="major" :value="major">
+                      {{ major }}
+                    </option>
+                  </select></label
+                >
+                <button
+                  type="button"
+                  class="light"
+                  @click="
+                    studentClass = '';
+                    studentMajor = '';
+                  "
+                >
+                  清除筛选
                 </button>
               </div>
-              <template v-if="active === 'classes'"
-                ><div class="two">
-                  <label
-                    >班级名称<input v-model="row.name" required maxlength="80"
-                  /></label>
-                  <label
-                    >年级<input v-model="row.grade" required maxlength="20"
-                  /></label>
-                  <label
-                    >院系<input
-                      v-model="row.department"
-                      required
-                      maxlength="80"
-                  /></label>
-                </div>
+              <p class="caption" role="status">
+                共 {{ directory.students.length }} 人 · 筛选结果
+                {{ filteredStudents.length }} 人 · 每页 50 人
+              </p>
+              <div class="student-table-wrap">
+                <table class="student-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">学号</th>
+                      <th scope="col">专业</th>
+                      <th scope="col">班级</th>
+                      <th scope="col">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, index) in visibleStudents" :key="index">
+                      <td>{{ row.user_id || "未填写" }}</td>
+                      <td>{{ row.major || "未填写" }}</td>
+                      <td>
+                        {{
+                          classLabel(
+                            directory.classes.find(
+                              (c) => c.class_id === row.class_id,
+                            ),
+                          )
+                        }}
+                      </td>
+                      <td class="student-row-actions">
+                        <button
+                          type="button"
+                          class="light"
+                          :aria-label="'编辑学生 ' + row.user_id"
+                          @click="editStudent(row)"
+                        >
+                          编辑</button
+                        ><button
+                          type="button"
+                          class="danger"
+                          :aria-label="'删除学生 ' + row.user_id"
+                          @click="removeStudent(row)"
+                        >
+                          删除
+                        </button>
+                      </td>
+                    </tr>
+                    <tr v-if="!visibleStudents.length">
+                      <td colspan="4" class="empty">没有符合条件的学生</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <nav class="student-pagination" aria-label="学生名单分页">
+                <button
+                  type="button"
+                  class="light"
+                  :disabled="studentPage === 1"
+                  @click="studentPage--"
+                >
+                  上一页
+                </button>
                 <label
-                  >辅导员学工号（英文逗号分隔）<input
-                    v-model="row.counselor_ids_text"
-                    required
-                    placeholder="例如：STAFF001, STAFF002" /></label
-              ></template>
-              <template v-else
-                ><div class="two">
-                  <label v-for="(label, key) in studentFields" :key="key"
-                    >{{ label
-                    }}<input
-                      v-model="row[key]"
-                      required
-                      :maxlength="
-                        key === 'user_id' ? 40 : key === 'grade' ? 20 : 80
-                      " /></label
-                  ><label
-                    >所属班级<select v-model="row.class_id" required>
-                      <option value="" disabled>请选择班级</option>
-                      <option
-                        v-for="group in directory.classes"
-                        :key="group.class_id"
-                        :value="group.class_id"
-                      >
-                        {{ classLabel(group) }}
-                      </option>
-                    </select></label
-                  >
-                </div></template
-              >
-            </div>
+                  >页码<select v-model.number="studentPage">
+                    <option
+                      v-for="page in studentPages"
+                      :key="page"
+                      :value="page"
+                    >
+                      第 {{ page }} / {{ studentPages }} 页
+                    </option>
+                  </select></label
+                >
+                <button
+                  type="button"
+                  class="light"
+                  :disabled="studentPage === studentPages"
+                  @click="studentPage++"
+                >
+                  下一页
+                </button>
+              </nav>
+            </section>
             <p v-if="!directory[active].length" class="empty">
               尚无{{
                 tabs.find((t) => t.key === active).label
@@ -361,6 +522,48 @@ onMounted(async () => {
           </fieldset>
         </form>
       </section>
+      <dialog
+        ref="studentDialog"
+        class="preview-dialog feedback-dialog"
+        aria-labelledby="student-edit-title"
+      >
+        <h2 id="student-edit-title">
+          {{ editingStudent ? "编辑学生" : "添加学生" }}
+        </h2>
+        <form @submit.prevent="applyStudent">
+          <label
+            >学号<input
+              v-model.trim="studentDraft.user_id"
+              required
+              maxlength="40"
+          /></label>
+          <label
+            >专业<input
+              v-model.trim="studentDraft.major"
+              required
+              maxlength="80"
+          /></label>
+          <label
+            >所属班级<select v-model="studentDraft.class_id" required>
+              <option value="" disabled>请选择班级</option>
+              <option
+                v-for="group in directory.classes"
+                :key="group.class_id"
+                :value="group.class_id"
+              >
+                {{ classLabel(group) }}
+              </option>
+            </select></label
+          >
+          <p class="caption">确认后请保存全部更改，才会更新服务器名单。</p>
+          <div class="actions">
+            <button>确认编辑</button
+            ><button type="button" class="light" @click="studentDialog.close()">
+              取消
+            </button>
+          </div>
+        </form>
+      </dialog>
       <dialog
         ref="refreshDialog"
         class="preview-dialog feedback-dialog"
