@@ -750,7 +750,7 @@ button.danger:hover:not(:disabled) {
 }
 .application-columns {
   display: grid;
-  grid-template-columns: minmax(230px, 0.7fr) minmax(0, 2fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 24px;
 }
 .application-columns h3 {
@@ -875,7 +875,7 @@ button.danger:hover:not(:disabled) {
   flex-direction: column;
 }
 .request-dialog {
-  width: min(1320px, calc(100% - 24px));
+  width: min(1000px, calc(100% - 24px));
   height: 92dvh;
 }
 .dialog-header {
@@ -904,7 +904,7 @@ button.danger:hover:not(:disabled) {
 }
 .request-detail-body {
   display: grid;
-  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.6fr);
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.2fr);
   gap: 24px;
 }
 .request-detail-body:not(:has(.request-pdf)) {
@@ -1197,5 +1197,28 @@ button.danger:hover:not(:disabled) {
   }
   .student-filters label {
     flex-basis: 100%;
+  }
+}
+
+/* Keep desktop details stable while the PDF pane scrolls independently. */
+@media (min-width: 651px) {
+  .request-detail-body:has(.request-pdf) {
+    overflow: hidden;
+  }
+  .request-metadata {
+    min-height: 0;
+    overflow: auto;
+  }
+  .request-pdf {
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+  .request-pdf .pdf-pages {
+    overflow: visible;
+    min-height: 0;
+  }
+  .request-pdf .pdf-toolbar {
+    top: 0;
   }
 }

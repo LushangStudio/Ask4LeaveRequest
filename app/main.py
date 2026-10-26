@@ -1062,6 +1062,34 @@ def download(did:str,db:Session=Depends(db_session),user:Person=Depends(current_
     if row.status in {'withdrawn','revoked'}:raise HTTPException(410,'请假条已撤回，文件已失效')
     if row.status!='approved' or row.file_status!='ready': raise HTTPException(409,'文件尚未就绪')
     return Response(doc.content,media_type='application/pdf',headers={'Content-Disposition':f'inline; filename="{doc.name}"','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
+class DownloadLinkInput(BaseModel):
+    kind: Literal['documents', 'previews']
+    id: str = Field(max_length=36)
+    position: int = Field(default=0, ge=0)
+
+@app.post('/api/download-links')
+def create_download_link(body:DownloadLinkInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):
+    # Run the same authorization and lifecycle checks as the authenticated route.
+    if body.kind=='documents': download(body.id,db,user)
+    else: preview_pdf(body.id,body.position,db,user)
+    from app.download_links import issue, TTL
+    token=issue(DATA_DIR,{'kind':body.kind,'id':body.id,'position':body.position,'uid':user.id,'name':user.name})
+    return {'path':'public-pdfs/'+token,'expires_in':TTL}
+
+@app.get('/api/public-pdfs/{token}')
+def public_pdf(token:str,db:Session=Depends(db_session)):
+    from app.download_links import verify
+    try: claims=verify(DATA_DIR,token)
+    except ValueError as exc: raise HTTPException(410,str(exc))
+    person=db.get(Person,claims['uid'])
+    if not person or not db.get(DirectoryMember,person.id):raise HTTPException(410,'下载链接已失效')
+    user=SimpleNamespace(id=person.id,name=claims['name'],role=person.role,counselor=person.counselor,profile=person.profile)
+    # Never cache a PDF snapshot: withdrawn documents and superseded previews fail here.
+    if claims['kind']=='documents': response=download(claims['id'],db,user)
+    else: response=preview_pdf(claims['id'],claims['position'],db,user)
+    response.headers['Content-Disposition']=response.headers['Content-Disposition'].replace('inline;', 'attachment;',1)
+    return response
+
 @app.middleware('http')
 async def no_cache(request,call_next):
     # Browser mutations must come from this origin; local script/test calls have no Origin.

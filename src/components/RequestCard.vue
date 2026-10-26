@@ -347,6 +347,11 @@ const fileStatuses = {
             @loaded="rendered"
           />
           <SavePdf
+            :resource="
+              viewingDocument
+                ? { kind: 'documents', id: viewingDocument.id }
+                : { kind: 'previews', id: preview.id, position: selected }
+            "
             :source-url="
               viewingDocument
                 ? documentUrl(viewingDocument.id)
