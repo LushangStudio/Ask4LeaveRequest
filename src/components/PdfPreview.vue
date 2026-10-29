@@ -1,15 +1,9 @@
 <script setup>
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist/build/pdf.mjs";
+import { getDocument, PDFWorker } from "pdfjs-dist/build/pdf.mjs";
+import { pdfErrorDetail } from "../pdf-errors.js";
 import PdfWorker from "pdfjs-dist/build/pdf.worker.mjs?worker&inline";
 
-// A bundled classic Blob worker avoids WebVPN rewriting a module worker.
-// Initialize lazily so opening the app does not allocate a PDF worker.
-function ensurePdfWorker() {
-  if (!GlobalWorkerOptions.workerPort) {
-    GlobalWorkerOptions.workerPort = new PdfWorker();
-  }
-}
 const props = defineProps({
   url: { type: String, required: true },
   blob: { type: Blob, required: true },
@@ -31,57 +25,80 @@ function applyZoom() {
     canvas.style.height = `${Math.floor(size.height * zoom.value)}px`;
   }
 }
-let task = null;
+let active = null;
 let generation = 0;
+
+function dispose(session) {
+  if (!session || session.disposed) return;
+  session.disposed = true;
+  session.renderTask?.cancel();
+  const cleanup = session.task ? session.task.destroy() : Promise.resolve();
+  cleanup
+    .catch(() => {})
+    .finally(() => {
+      session.worker?.destroy();
+      session.port?.terminate();
+    });
+}
 
 async function render() {
   const version = ++generation;
   const url = props.url;
-  if (task) {
-    await task.destroy();
-    task = null;
-  }
-  if (version !== generation) return;
+  const blob = props.blob;
+  dispose(active);
+  const session = {};
+  active = session;
   loading.value = true;
   error.value = "";
   pages.value = [];
   pageSizes.clear();
   zoom.value = 1;
-  await nextTick();
   try {
-    ensurePdfWorker();
-    // Read the existing Blob directly: WebVPN intercepts XHR even for blob URLs.
-    // A fresh buffer is needed each time because PDF.js transfers it to its worker.
-    const data = new Uint8Array(await props.blob.arrayBuffer());
+    await nextTick();
+    const data = new Uint8Array(await blob.arrayBuffer());
     if (version !== generation) return;
-    const loadingTask = getDocument({ data, isEvalSupported: false });
-    task = loadingTask;
-    const pdf = await loadingTask.promise;
+    // Own each worker: PDF.js caches workers by port, so a shared port can
+    // return a worker that a previous component is still destroying.
+    session.port = new PdfWorker();
+    session.worker = new PDFWorker({ port: session.port });
+    session.task = getDocument({
+      data,
+      worker: session.worker,
+      isEvalSupported: false,
+    });
+    const pdf = await session.task.promise;
     if (version !== generation) return;
     pages.value = Array.from({ length: pdf.numPages }, (_, index) => index + 1);
     await nextTick();
+    if (version !== generation || !holder.value) return;
     const width = Math.max(220, Math.min(1100, holder.value.clientWidth - 24));
     for (const number of pages.value) {
       const page = await pdf.getPage(number);
       if (version !== generation) return;
       const initial = page.getViewport({ scale: 1 });
       const viewport = page.getViewport({ scale: width / initial.width });
+      // Bound canvas memory on mobile; zoom only changes its display size.
       const ratio = Math.min(
-        // Render once for the maximum 200% zoom; cap memory per page.
-        (window.devicePixelRatio || 1) * 2,
-        4,
-        Math.sqrt(8_000_000 / (viewport.width * viewport.height)),
+        window.devicePixelRatio || 1,
+        2,
+        Math.sqrt(3_000_000 / (viewport.width * viewport.height)),
       );
       const canvas = canvases.get(number);
+      if (!canvas) throw new Error("PDF canvas unavailable");
       canvas.width = Math.floor(viewport.width * ratio);
       canvas.height = Math.floor(viewport.height * ratio);
       pageSizes.set(number, { width: viewport.width, height: viewport.height });
       applyZoom();
-      await page.render({
-        canvasContext: canvas.getContext("2d"),
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("PDF canvas context unavailable");
+      session.renderTask = page.render({
+        canvasContext: context,
         viewport,
         transform: [ratio, 0, 0, ratio, 0, 0],
-      }).promise;
+      });
+      await session.renderTask.promise;
+      session.renderTask = null;
+      page.cleanup();
     }
     if (version === generation) {
       loading.value = false;
@@ -90,15 +107,17 @@ async function render() {
   } catch (e) {
     if (version !== generation) return;
     loading.value = false;
-    error.value = "PDF 页面加载失败，请重新预览或下载 PDF 查看。";
+    error.value = `PDF 预览失败：${pdfErrorDetail(e)}。可重试或下载查看；不影响审批。`;
+    console.warn("PDF preview failed", pdfErrorDetail(e));
     emit("error", url);
+    dispose(session);
   }
 }
-watch(() => props.url, render, { immediate: true });
+watch([() => props.url, () => props.blob], render, { immediate: true });
 watch(zoom, applyZoom);
 onBeforeUnmount(() => {
   generation++;
-  if (task) task.destroy();
+  dispose(active);
 });
 </script>
 
@@ -133,7 +152,10 @@ onBeforeUnmount(() => {
     :aria-busy="loading"
   >
     <p v-if="loading" class="muted" role="status">正在渲染 PDF 页面…</p>
-    <p v-if="error" class="inline-error" role="alert">{{ error }}</p>
+    <p v-if="error" class="inline-error" role="alert">
+      {{ error }}
+      <button type="button" class="light" @click="render">重试预览</button>
+    </p>
     <figure v-for="number in pages" :key="`${url}-${number}`">
       <canvas
         :ref="

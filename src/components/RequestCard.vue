@@ -56,10 +56,7 @@ const canApprove = computed(
     preparedOpinion.value === opinion.value.trim() &&
     preview.value &&
     !viewingDocument.value &&
-    !previewBusy.value &&
-    confirmed.value &&
-    seen.value.size === previewUrls.value.length &&
-    previewUrls.value.length > 0,
+    confirmed.value,
 );
 function clearPreview() {
   previewGeneration++;
@@ -116,6 +113,9 @@ async function openPreview() {
       opinion: sentOpinion,
     });
     if (generation !== previewGeneration) return;
+    // Approval depends on this server snapshot, never on browser PDF rendering.
+    preview.value = result;
+    preparedOpinion.value = sentOpinion;
     for (let i = 0; i < result.count; i++) {
       const file = await pdfBlob(`previews/${result.id}/${i}`, {
         signal: controller.signal,
@@ -128,8 +128,6 @@ async function openPreview() {
       urls.forEach((url) => URL.revokeObjectURL(url));
       return;
     }
-    preview.value = result;
-    preparedOpinion.value = sentOpinion;
     previewUrls.value = urls;
     previewBlobs.value = blobs;
     seen.value = new Set();
@@ -329,6 +327,9 @@ const fileStatuses = {
         </div>
         <p v-if="previewError" role="alert" class="inline-error">
           {{ previewError }}
+          <span v-if="pendingReview && preview"
+            >PDF 获取失败不影响审批，可核对左侧申请信息后签署。</span
+          >
         </p>
         <template v-if="previewUrls.length">
           <div v-if="previewUrls.length > 1" class="preview-tabs">
@@ -386,13 +387,8 @@ const fileStatuses = {
             ><input
               v-model="confirmed"
               type="checkbox"
-              :disabled="
-                busy ||
-                !preview ||
-                preparedOpinion !== opinion.trim() ||
-                seen.size !== previewUrls.length
-              "
-            />我已核对全部请假条及签名</label
+              :disabled="busy || !preview || preparedOpinion !== opinion.trim()"
+            />我已核对申请信息并确认使用当前签名签署</label
           >
           <div class="actions">
             <button
