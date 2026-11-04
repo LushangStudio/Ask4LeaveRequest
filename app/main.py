@@ -244,14 +244,38 @@ class ApprovalPreview(Base):
     expires: Mapped[datetime] = mapped_column(DateTime, index=True)
 
 def sync_directory(db, roster, commit=True):
-    # Reconcile normalized tables within the same roster revision transaction.
-    db.query(ClassCounselor).delete(synchronize_session=False)
-    db.query(DirectoryStudent).delete(synchronize_session=False)
-    db.query(DirectoryClass).delete(synchronize_session=False)
-    db.add_all([DirectoryClass(**c.model_dump()) for c in roster.classes])
+    # Only mutate changed normalized rows. Children must move/delete before a
+    # class is removed, and new classes must exist before children reference them.
+    class_rows={r.class_id:r for r in db.scalars(select(DirectoryClass))}
+    student_rows={r.user_id:r for r in db.scalars(select(DirectoryStudent))}
+    relation_rows={(r.class_id,r.user_id):r for r in db.scalars(select(ClassCounselor))}
+    wanted_classes={r.class_id for r in roster.classes}
+    wanted_students={r.user_id for r in roster.students}
+    wanted_relations={(r.class_id,r.user_id) for r in roster.class_counselors}
+    for model in roster.classes:
+        values=model.model_dump()
+        row=class_rows.get(model.class_id)
+        if row:
+            for field,value in values.items():
+                if getattr(row,field)!=value:setattr(row,field,value)
+        else:db.add(DirectoryClass(**values))
     db.flush()
-    db.add_all([ClassCounselor(**r.model_dump()) for r in roster.class_counselors])
-    db.add_all([DirectoryStudent(**s.model_dump()) for s in roster.students])
+    for key,row in relation_rows.items():
+        if key not in wanted_relations:db.delete(row)
+    for key,row in student_rows.items():
+        if key not in wanted_students:db.delete(row)
+    for model in roster.students:
+        values=model.model_dump()
+        row=student_rows.get(model.user_id)
+        if row:
+            for field,value in values.items():
+                if getattr(row,field)!=value:setattr(row,field,value)
+        else:db.add(DirectoryStudent(**values))
+    for model in roster.class_counselors:
+        if (model.class_id,model.user_id) not in relation_rows:db.add(ClassCounselor(**model.model_dump()))
+    db.flush()
+    for key,row in class_rows.items():
+        if key not in wanted_classes:db.delete(row)
     db.flush()
     classes = {c.class_id:c for c in roster.classes}
     student_ids={s.user_id for s in roster.students}
@@ -705,6 +729,21 @@ def save_admin_directory(body:DirectoryUpdate,db:Session=Depends(db_session),use
     except Exception:
         db.rollback();logging.getLogger(__name__).exception('Admin directory save failed')
         raise HTTPException(503,'名单保存失败，已回滚，请稍后重试') from None
+
+from app.directory_delta import DirectoryDelta
+
+@app.patch('/api/admin/directory')
+def patch_admin_directory(body:DirectoryDelta,db:Session=Depends(db_session),user:Person=Depends(current_user)):
+    require_admin(user)
+    state=db.get(DirectoryState,1)
+    if not state:raise HTTPException(503,'班级数据库尚未初始化')
+    if state.digest!=body.revision:raise HTTPException(409,'名单已被其他管理员修改，请刷新后重新编辑')
+    try:roster=body.apply(state.directory)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from None
+    if roster.model_dump()==state.directory:return {'directory':state.directory,'revision':state.digest}
+    # Existing compare-and-swap protects against a concurrent commit after read.
+    return save_admin_directory(DirectoryUpdate(directory=roster,revision=body.revision),db,user)
 
 class StudentImportInput(BaseModel):
     class_id:str=Field(min_length=1,max_length=36)

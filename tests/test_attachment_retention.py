@@ -15,6 +15,7 @@ def test_calendar_month_boundaries():
 
 
 def test_purge_only_attachments_after_deadline_and_blocks_access(client,monkeypatch):
+    monkeypatch.setattr(retention,'today',lambda:date(2026,11,3))
     login(client)
     body=payload();body['attachments']=[attachment()]
     row=submit(client,body);aid=row['attachments'][0]['id']

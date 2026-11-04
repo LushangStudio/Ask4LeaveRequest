@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch, nextTick } from "vue";
 import { api, apiUrl } from "./api.js";
+import { directoryDelta } from "./directory-delta.js";
 import AccountMenu from "./components/AccountMenu.vue";
 import FeedbackDialog from "./components/FeedbackDialog.vue";
 
@@ -81,7 +82,7 @@ async function applyStudent() {
     await nextTick();
     studentPage.value = studentPages.value;
   }
-  status.value = "学生编辑已加入待保存更改，请点击保存全部更改。";
+  status.value = "学生编辑已加入待保存更改，请点击保存更改。";
   studentDialog.value.close();
 }
 function removeStudent(row) {
@@ -161,7 +162,7 @@ function applyClass() {
     directory.value.classes.push({ ...classDraft.value });
     classPage.value = classPages.value;
   }
-  status.value = "班级编辑已加入待保存更改，请点击保存全部更改。";
+  status.value = "班级编辑已加入待保存更改，请点击保存更改。";
   classDialog.value.close();
 }
 function add() {
@@ -175,36 +176,13 @@ function removeClass(row) {
 async function save() {
   busy.value = true;
   status.value = "";
-  const payload = {
-    version: 2,
-    classes: directory.value.classes.map(
-      ({ class_id, name, grade, department }) => ({
-        class_id,
-        name,
-        grade,
-        department,
-      }),
-    ),
-    class_counselors: directory.value.classes.flatMap((c) =>
-      c.counselor_ids_text
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map((user_id) => ({ class_id: c.class_id, user_id })),
-    ),
-    students: directory.value.students.map(({ user_id, major, class_id }) => ({
-      user_id,
-      major,
-      class_id,
-    })),
-  };
   try {
-    accept(
-      await api("admin/directory", {
-        directory: payload,
-        revision: revision.value,
-      }),
+    const payload = directoryDelta(
+      JSON.parse(original.value),
+      directory.value,
+      revision.value,
     );
+    accept(await api("admin/directory", payload, "PATCH"));
     status.value = "已保存并生效，无需重启。";
   } catch (e) {
     status.value = e.message;
@@ -568,7 +546,7 @@ onMounted(async () => {
             </button>
             <div class="admin-save">
               <button :disabled="busy || !dirty">
-                {{ busy ? "正在保存…" : "保存全部更改" }}</button
+                {{ busy ? "正在保存…" : "保存更改" }}</button
               ><span class="caption">{{
                 dirty ? "有未保存更改" : "所有更改已保存"
               }}</span>
@@ -607,7 +585,7 @@ onMounted(async () => {
               required
               placeholder="例如：STAFF001, STAFF002"
           /></label>
-          <p class="caption">确认后请保存全部更改，才会更新服务器名单。</p>
+          <p class="caption">确认后请保存更改，才会更新服务器名单。</p>
           <div class="actions">
             <button>确认编辑</button
             ><button type="button" class="light" @click="classDialog.close()">
@@ -649,7 +627,7 @@ onMounted(async () => {
               </option>
             </select></label
           >
-          <p class="caption">确认后请保存全部更改，才会更新服务器名单。</p>
+          <p class="caption">确认后请保存更改，才会更新服务器名单。</p>
           <div class="actions">
             <button>确认编辑</button
             ><button type="button" class="light" @click="studentDialog.close()">

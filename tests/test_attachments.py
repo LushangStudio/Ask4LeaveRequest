@@ -1,3 +1,5 @@
+from datetime import date
+from app import attachment_retention as retention
 import base64
 import copy
 from sqlalchemy import select, func
@@ -11,7 +13,8 @@ def attachment(name='中文证明.pdf', content=b'%PDF-1.7\nproof'):
     return {'name':name,'data':base64.b64encode(content).decode()}
 
 
-def test_attachments_atomic_idempotent_and_private(client):
+def test_attachments_atomic_idempotent_and_private(client,monkeypatch):
+    monkeypatch.setattr(retention,'today',lambda:date(2026,10,23))
     login(client)
     body=payload();body['attachments']=[attachment(),attachment('说明.txt',b'details'),attachment('photo.png',b'opaque bytes')]
     row=submit(client,body)
@@ -53,7 +56,8 @@ def test_invalid_attachments_do_not_create_request(client):
         assert db.scalar(select(func.count()).select_from(m.Attachment))==0
 
 
-def test_three_max_size_files_and_filename_sanitization(client):
+def test_three_max_size_files_and_filename_sanitization(client,monkeypatch):
+    monkeypatch.setattr(retention,'today',lambda:date(2026,10,23))
     login(client)
     body=payload();body['attachments']=[attachment('../文件.txt',b'x'*MAX_ATTACHMENT_BYTES)]*3
     row=submit(client,body)

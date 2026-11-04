@@ -19,9 +19,13 @@ export function documentUrl(id) {
   return new URL(`documents/${encodeURIComponent(id)}`, apiBase).href;
 }
 
-export async function api(path, body) {
+export async function api(
+  path,
+  body,
+  method = body === undefined ? "GET" : "POST",
+) {
   const response = await fetch(new URL(path, apiBase), {
-    method: body === undefined ? "GET" : "POST",
+    method,
     headers: body === undefined ? {} : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
