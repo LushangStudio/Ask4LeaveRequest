@@ -101,3 +101,9 @@ GitHub Actions `CI / Build and test` 在 main 推送、Pull Request 及手动触
 ### 班级和学生增量保存
 
 管理页“保存更改”调用 `PATCH /api/admin/directory`，提交 `revision` 与 `classes`、`students`（新增或修改的记录）、`deleted_classes`、`deleted_students`（明确删除的 ID）。未提交的记录保持不变。班级记录包含 `counselor_ids`，一次替换该班级的辅导员关系。多项变更在同一事务生效，仍有学生的班级须先迁移或删除学生。版本冲突返回 409，页面保留未保存编辑；刷新名单后重新编辑。批量导入仍只上传所选班级、导入文本和版本号。旧版全量接口保留兼容，当前管理页不再调用它。规范化名单表按行更新，内部版本快照及审计继续使用现有结构，无需迁移。
+
+### 名册服务端分页
+
+`GET /api/admin/directory?view=classes|students&page=1` 每页固定 50 条，返回当前页 `directory`、`revision`、页码、页数、筛选后总数与班级/学生计数。学生页接受 `class_id` 和 `major` 组合筛选；班级页接受 `q` 名称搜索，返回当前页班级的辅导员关系。学生页的班级显示名称随当前页返回，不下载其他班级或其他学生。查询在规范化名单表执行，不读取完整 DirectoryState JSON。
+
+`GET /api/admin/majors?page=1&q=名称&class_id=班级` 为专业选择器提供分页候选；班级选择器同样使用班级分页接口。增量 PATCH 保存只返回 `revision`，页面随后刷新当前页。导入预览只展示前 50 人和前 50 条错误，`total`、`error_count` 表示完整统计；导入确认仅返回 `revision`、`created`、`updated`。所有这些接口仍要求管理员权限。当前页存在未保存更改时需先保存，才能切换、筛选或翻页。无需数据库迁移。

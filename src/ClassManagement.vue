@@ -1,7 +1,8 @@
 <script setup>
-import { computed, onMounted, ref, watch, nextTick } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { api, apiUrl } from "./api.js";
 import { directoryDelta } from "./directory-delta.js";
+import DirectoryPicker from "./components/DirectoryPicker.vue";
 import AccountMenu from "./components/AccountMenu.vue";
 import FeedbackDialog from "./components/FeedbackDialog.vue";
 
@@ -26,39 +27,20 @@ const workspaceUrl = new URL("../", window.location.href).href;
 const studentClass = ref("");
 const studentMajor = ref("");
 const studentPage = ref(1);
-const pageSize = 50;
 const studentDialog = ref(null);
 const editingStudent = ref(null);
 const studentDraft = ref({ user_id: "", major: "", class_id: "" });
-const majors = computed(() =>
-  [
-    ...new Set(
-      (directory.value?.students || []).map((s) => s.major).filter(Boolean),
-    ),
-  ].sort((a, b) => a.localeCompare(b, "zh-CN")),
-);
-const filteredStudents = computed(() =>
-  (directory.value?.students || []).filter(
-    (s) =>
-      (!studentClass.value || s.class_id === studentClass.value) &&
-      (!studentMajor.value || s.major === studentMajor.value),
-  ),
-);
-const studentPages = computed(() =>
-  Math.max(1, Math.ceil(filteredStudents.value.length / pageSize)),
-);
-const visibleStudents = computed(() =>
-  filteredStudents.value.slice(
-    (studentPage.value - 1) * pageSize,
-    studentPage.value * pageSize,
-  ),
-);
+const counts = ref({ classes: 0, students: 0 });
+const pageMeta = ref({ total: 0, pages: 1, page: 1 });
+const studentPages = computed(() => pageMeta.value.pages);
+const classPages = computed(() => pageMeta.value.pages);
+const visibleStudents = computed(() => directory.value?.students || []);
+const visibleClasses = computed(() => directory.value?.classes || []);
 watch([studentClass, studentMajor], () => {
-  studentPage.value = 1;
+  if (studentPage.value !== 1) studentPage.value = 1;
+  else refresh();
 });
-watch(studentPages, (count) => {
-  studentPage.value = Math.min(studentPage.value, count);
-});
+watch([active, studentPage], () => refresh());
 function editStudent(row = null) {
   editingStudent.value = row;
   studentDraft.value = row
@@ -66,21 +48,20 @@ function editStudent(row = null) {
     : {
         user_id: "",
         major: studentMajor.value,
-        class_id:
-          studentClass.value || directory.value.classes[0]?.class_id || "",
+        class_id: studentClass.value || "",
       };
   studentDialog.value.showModal();
 }
 async function applyStudent() {
   if (editingStudent.value)
-    Object.assign(editingStudent.value, studentDraft.value);
+    Object.assign(editingStudent.value, studentDraft.value, {
+      class_label:
+        studentDraft.value.class_id === editingStudent.value.class_id
+          ? editingStudent.value.class_label
+          : "待保存班级",
+    });
   else {
     directory.value.students.push({ ...studentDraft.value });
-    studentClass.value = "";
-    studentMajor.value = "";
-    // Filter watchers reset first; show the newly added student afterwards.
-    await nextTick();
-    studentPage.value = studentPages.value;
   }
   status.value = "学生编辑已加入待保存更改，请点击保存更改。";
   studentDialog.value.close();
@@ -93,11 +74,6 @@ const tabs = [
   { key: "classes", label: "班级" },
   { key: "students", label: "学生" },
 ];
-function classLabel(group) {
-  return group
-    ? `${group.name} · ${group.grade} · ${group.department}`
-    : "未选择班级";
-}
 function accept(result) {
   directory.value = result.directory;
   directory.value.classes.forEach(
@@ -107,20 +83,38 @@ function accept(result) {
         .map((r) => r.user_id)
         .join(", ")),
   );
-  if (!directory.value.classes.some((c) => c.class_id === importClass.value))
-    importClass.value = "";
+  counts.value = result.counts;
+  pageMeta.value = {
+    total: result.total,
+    pages: result.pages,
+    page: result.page,
+  };
+  if (active.value === "classes") classPage.value = result.page;
+  else studentPage.value = result.page;
   revision.value = result.revision;
   original.value = JSON.stringify(directory.value);
 }
+let loadGeneration = 0;
 async function refresh() {
+  const generation = ++loadGeneration;
   busy.value = true;
-  status.value = "";
   try {
-    accept(await api("admin/directory"));
+    const params = new URLSearchParams({
+      view: active.value,
+      page: String(
+        active.value === "classes" ? classPage.value : studentPage.value,
+      ),
+    });
+    if (active.value === "students") {
+      if (studentClass.value) params.set("class_id", studentClass.value);
+      if (studentMajor.value) params.set("major", studentMajor.value);
+    }
+    const result = await api(`admin/directory?${params}`);
+    if (generation === loadGeneration) accept(result);
   } catch (e) {
-    message.value = e.message;
+    if (generation === loadGeneration) message.value = e.message;
   } finally {
-    busy.value = false;
+    if (generation === loadGeneration) busy.value = false;
   }
 }
 function requestRefresh() {
@@ -131,18 +125,7 @@ const classDialog = ref(null);
 const editingClass = ref(null);
 const classDraft = ref({});
 const classPage = ref(1);
-const classPages = computed(() =>
-  Math.max(1, Math.ceil((directory.value?.classes.length || 0) / pageSize)),
-);
-const visibleClasses = computed(() =>
-  (directory.value?.classes || []).slice(
-    (classPage.value - 1) * pageSize,
-    classPage.value * pageSize,
-  ),
-);
-watch(classPages, (count) => {
-  classPage.value = Math.min(classPage.value, count);
-});
+watch(classPage, () => refresh());
 function editClass(row = null) {
   editingClass.value = row;
   classDraft.value = row
@@ -160,7 +143,6 @@ function applyClass() {
   if (editingClass.value) Object.assign(editingClass.value, classDraft.value);
   else {
     directory.value.classes.push({ ...classDraft.value });
-    classPage.value = classPages.value;
   }
   status.value = "班级编辑已加入待保存更改，请点击保存更改。";
   classDialog.value.close();
@@ -182,7 +164,10 @@ async function save() {
       directory.value,
       revision.value,
     );
-    accept(await api("admin/directory", payload, "PATCH"));
+    const saved = await api("admin/directory", payload, "PATCH");
+    revision.value = saved.revision;
+    original.value = JSON.stringify(directory.value);
+    await refresh();
     status.value = "已保存并生效，无需重启。";
   } catch (e) {
     status.value = e.message;
@@ -218,7 +203,8 @@ async function commitStudents() {
       class_id: importClass.value,
       revision: revision.value,
     });
-    accept(result);
+    revision.value = result.revision;
+    await refresh();
     importDialog.value.close();
     importText.value = "";
     importPreview.value = null;
@@ -292,10 +278,10 @@ onMounted(async () => {
               v-for="tab in tabs"
               :key="tab.key"
               :class="{ light: active !== tab.key }"
-              :disabled="busy"
+              :disabled="busy || dirty"
               @click="active = tab.key"
             >
-              {{ tab.label }} · {{ directory[tab.key].length }}
+              {{ tab.label }} · {{ counts[tab.key] }}
             </button>
           </div>
           <button class="light" :disabled="busy" @click="requestRefresh">
@@ -309,21 +295,13 @@ onMounted(async () => {
               <p class="caption">
                 先选择导入班级，每行一人：学号,专业。使用英文逗号；同学号更新专业及所属班级。先保存当前编辑，再导入。
               </p>
-              <label
-                >导入班级<select
-                  v-model="importClass"
-                  @change="importPreview = null"
-                >
-                  <option value="" disabled>请选择班级</option>
-                  <option
-                    v-for="group in directory.classes"
-                    :key="group.class_id"
-                    :value="group.class_id"
-                  >
-                    {{ classLabel(group) }}
-                  </option>
-                </select></label
-              >
+              <DirectoryPicker
+                v-model="importClass"
+                label="导入班级"
+                placeholder="请选择班级"
+                :disabled="busy || dirty"
+                @update:model-value="importPreview = null"
+              />
               <label
                 >学生批量名单<textarea
                   v-model="importText"
@@ -348,9 +326,7 @@ onMounted(async () => {
               }}
             </p>
             <section v-if="active === 'classes'" aria-label="班级管理列表">
-              <p class="caption">
-                共 {{ directory.classes.length }} 个班级 · 每页 50 个
-              </p>
+              <p class="caption">共 {{ counts.classes }} 个班级 · 每页 50 个</p>
               <div class="student-table-wrap">
                 <table class="student-table">
                   <thead>
@@ -396,13 +372,17 @@ onMounted(async () => {
                 <button
                   type="button"
                   class="light"
-                  :disabled="classPage === 1"
+                  :disabled="busy || dirty || classPage === 1"
                   @click="classPage--"
                 >
                   上一页
                 </button>
                 <label
-                  >页码<select v-model.number="classPage">
+                  >页码<select
+                    :disabled="busy || dirty"
+                    :value="pageMeta.page"
+                    @change="classPage = Number($event.target.value)"
+                  >
                     <option
                       v-for="page in classPages"
                       :key="page"
@@ -415,7 +395,7 @@ onMounted(async () => {
                 <button
                   type="button"
                   class="light"
-                  :disabled="classPage === classPages"
+                  :disabled="busy || dirty || classPage === classPages"
                   @click="classPage++"
                 >
                   下一页
@@ -424,29 +404,22 @@ onMounted(async () => {
             </section>
             <section v-else class="student-directory" aria-label="学生管理列表">
               <div class="student-filters">
-                <label
-                  >按班级筛选<select v-model="studentClass">
-                    <option value="">全部班级</option>
-                    <option
-                      v-for="group in directory.classes"
-                      :key="group.class_id"
-                      :value="group.class_id"
-                    >
-                      {{ classLabel(group) }}
-                    </option>
-                  </select></label
-                >
-                <label
-                  >按专业筛选<select v-model="studentMajor">
-                    <option value="">全部专业</option>
-                    <option v-for="major in majors" :key="major" :value="major">
-                      {{ major }}
-                    </option>
-                  </select></label
-                >
+                <DirectoryPicker
+                  v-model="studentClass"
+                  label="按班级筛选"
+                  :disabled="busy || dirty"
+                />
+                <DirectoryPicker
+                  v-model="studentMajor"
+                  label="按专业筛选"
+                  kind="majors"
+                  :class-id="studentClass"
+                  :disabled="busy || dirty"
+                />
                 <button
                   type="button"
                   class="light"
+                  :disabled="busy || dirty"
                   @click="
                     studentClass = '';
                     studentMajor = '';
@@ -456,8 +429,8 @@ onMounted(async () => {
                 </button>
               </div>
               <p class="caption" role="status">
-                共 {{ directory.students.length }} 人 · 筛选结果
-                {{ filteredStudents.length }} 人 · 每页 50 人
+                共 {{ counts.students }} 人 · 筛选结果 {{ pageMeta.total }} 人 ·
+                每页 50 人
               </p>
               <div class="student-table-wrap">
                 <table class="student-table">
@@ -474,13 +447,7 @@ onMounted(async () => {
                       <td>{{ row.user_id || "未填写" }}</td>
                       <td>{{ row.major || "未填写" }}</td>
                       <td>
-                        {{
-                          classLabel(
-                            directory.classes.find(
-                              (c) => c.class_id === row.class_id,
-                            ),
-                          )
-                        }}
+                        {{ row.class_label || "待保存班级" }}
                       </td>
                       <td class="student-row-actions">
                         <button
@@ -510,13 +477,17 @@ onMounted(async () => {
                 <button
                   type="button"
                   class="light"
-                  :disabled="studentPage === 1"
+                  :disabled="busy || dirty || studentPage === 1"
                   @click="studentPage--"
                 >
                   上一页
                 </button>
                 <label
-                  >页码<select v-model.number="studentPage">
+                  >页码<select
+                    :disabled="busy || dirty"
+                    :value="pageMeta.page"
+                    @change="studentPage = Number($event.target.value)"
+                  >
                     <option
                       v-for="page in studentPages"
                       :key="page"
@@ -529,7 +500,7 @@ onMounted(async () => {
                 <button
                   type="button"
                   class="light"
-                  :disabled="studentPage === studentPages"
+                  :disabled="busy || dirty || studentPage === studentPages"
                   @click="studentPage++"
                 >
                   下一页
@@ -544,6 +515,9 @@ onMounted(async () => {
             <button type="button" class="light" @click="add">
               添加{{ tabs.find((t) => t.key === active).label }}
             </button>
+            <p v-if="dirty" class="caption">
+              请先保存当前页更改，再筛选、切换列表或翻页。
+            </p>
             <div class="admin-save">
               <button :disabled="busy || !dirty">
                 {{ busy ? "正在保存…" : "保存更改" }}</button
@@ -615,18 +589,12 @@ onMounted(async () => {
               required
               maxlength="80"
           /></label>
-          <label
-            >所属班级<select v-model="studentDraft.class_id" required>
-              <option value="" disabled>请选择班级</option>
-              <option
-                v-for="group in directory.classes"
-                :key="group.class_id"
-                :value="group.class_id"
-              >
-                {{ classLabel(group) }}
-              </option>
-            </select></label
-          >
+          <DirectoryPicker
+            v-model="studentDraft.class_id"
+            label="所属班级"
+            :initial-label="editingStudent?.class_label"
+            required
+          />
           <p class="caption">确认后请保存更改，才会更新服务器名单。</p>
           <div class="actions">
             <button>确认编辑</button
@@ -666,16 +634,16 @@ onMounted(async () => {
           <p>
             新增{{ importPreview.created }}人，更新{{
               importPreview.updated
-            }}人；错误{{ importPreview.errors.length }}行。
+            }}人；错误{{ importPreview.error_count }}行。
           </p>
           <p
-            v-for="error in importPreview.errors.slice(0, 100)"
+            v-for="error in importPreview.errors"
             :key="`${error.line}-${error.message}`"
             class="inline-error"
           >
             第{{ error.line }}行：{{ error.message }}
           </p>
-          <p v-if="importPreview.errors.length">
+          <p v-if="importPreview.error_count">
             请关闭预览并修正全部错误。此次不会导入任何人员。
           </p>
           <div class="import-table-wrap">
@@ -689,32 +657,22 @@ onMounted(async () => {
               </thead>
               <tbody>
                 <tr
-                  v-for="student in importPreview.students.slice(0, 100)"
+                  v-for="student in importPreview.students"
                   :key="student.user_id"
                 >
                   <td>{{ student.user_id }}</td>
-                  <td>
-                    {{
-                      classLabel(
-                        directory.classes.find(
-                          (c) => c.class_id === student.class_id,
-                        ),
-                      )
-                    }}
-                  </td>
+                  <td>所选导入班级</td>
                   <td>{{ student.major }}</td>
                 </tr>
               </tbody>
             </table>
           </div>
-          <p v-if="importPreview.students.length > 100" class="caption">
-            预览显示前100人，确认将导入全部{{
-              importPreview.students.length
-            }}人。
+          <p v-if="importPreview.total > 50" class="caption">
+            预览显示前50人，确认将导入全部{{ importPreview.total }}人。
           </p>
           <div class="actions">
             <button
-              :disabled="busy || importPreview.errors.length > 0"
+              :disabled="busy || importPreview.error_count > 0"
               @click="commitStudents"
             >
               确认导入</button

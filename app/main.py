@@ -21,7 +21,7 @@ from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit, quote
 
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, Request as HTTPRequest
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, Query, Request as HTTPRequest
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
@@ -694,12 +694,49 @@ def listing(view:Literal['student','counselor']|None=None,db:Session=Depends(db_
 def detail(rid:str,db:Session=Depends(db_session),user:Person=Depends(current_user)):
     return serialize(db,authorized(db,rid,user))
 
+def directory_page(query, db, page):
+    total=db.scalar(select(func.count()).select_from(query.order_by(None).subquery()))
+    pages=max(1,(total+49)//50);page=min(page,pages)
+    rows=list(db.scalars(query.limit(50).offset((page-1)*50)))
+    return rows,{'page':page,'pages':pages,'page_size':50,'total':total}
+
 @app.get('/api/admin/directory')
-def admin_directory(db:Session=Depends(db_session),user:Person=Depends(current_user)):
+def admin_directory(view:Literal['classes','students']='classes',page:int=Query(default=1,ge=1),
+                    class_id:str=Query(default='',max_length=36),major:str=Query(default='',max_length=80),
+                    q:str=Query(default='',max_length=80),db:Session=Depends(db_session),user:Person=Depends(current_user)):
     require_admin(user)
-    state=db.get(DirectoryState,1)
-    if not state:raise HTTPException(503,'班级数据库尚未初始化')
-    return {'directory':state.directory,'revision':state.digest}
+    revision=db.scalar(select(DirectoryState.digest).where(DirectoryState.id==1))
+    if not revision:raise HTTPException(503,'班级数据库尚未初始化')
+    data={'version':2,'classes':[],'students':[],'class_counselors':[]}
+    if view=='classes':
+        query=select(DirectoryClass).order_by(DirectoryClass.class_id)
+        if class_id:query=query.where(DirectoryClass.class_id==class_id)
+        if q:query=query.where(DirectoryClass.name.contains(q,autoescape=True))
+        rows,meta=directory_page(query,db,page)
+        data['classes']=[{k:getattr(row,k) for k in ('class_id','name','grade','department')} for row in rows]
+        ids=[row.class_id for row in rows]
+        if ids:data['class_counselors']=[{'class_id':r.class_id,'user_id':r.user_id} for r in db.scalars(select(ClassCounselor).where(ClassCounselor.class_id.in_(ids)).order_by(ClassCounselor.class_id,ClassCounselor.user_id))]
+    else:
+        query=select(DirectoryStudent).order_by(DirectoryStudent.user_id)
+        if class_id:query=query.where(DirectoryStudent.class_id==class_id)
+        if major:query=query.where(DirectoryStudent.major==major)
+        rows,meta=directory_page(query,db,page)
+        ids={row.class_id for row in rows}
+        labels={r.class_id:f'{r.name} · {r.grade} · {r.department}' for r in db.scalars(select(DirectoryClass).where(DirectoryClass.class_id.in_(ids)))} if ids else {}
+        data['students']=[dict(user_id=r.user_id,major=r.major,class_id=r.class_id,class_label=labels.get(r.class_id,'')) for r in rows]
+    counts={'classes':db.scalar(select(func.count()).select_from(DirectoryClass)),
+            'students':db.scalar(select(func.count()).select_from(DirectoryStudent))}
+    return {'directory':data,'revision':revision,'counts':counts,**meta}
+
+@app.get('/api/admin/majors')
+def admin_majors(page:int=Query(default=1,ge=1),q:str=Query(default='',max_length=80),
+                 class_id:str=Query(default='',max_length=36),db:Session=Depends(db_session),user:Person=Depends(current_user)):
+    require_admin(user)
+    query=select(DirectoryStudent.major).distinct().order_by(DirectoryStudent.major)
+    if q:query=query.where(DirectoryStudent.major.contains(q,autoescape=True))
+    if class_id:query=query.where(DirectoryStudent.class_id==class_id)
+    rows,meta=directory_page(query,db,page)
+    return {'items':rows,**meta}
 
 class DirectoryUpdate(BaseModel):
     @model_validator(mode='before')
@@ -741,9 +778,10 @@ def patch_admin_directory(body:DirectoryDelta,db:Session=Depends(db_session),use
     try:roster=body.apply(state.directory)
     except ValueError as exc:
         raise HTTPException(422,str(exc)) from None
-    if roster.model_dump()==state.directory:return {'directory':state.directory,'revision':state.digest}
+    if roster.model_dump()==state.directory:return {'revision':state.digest}
     # Existing compare-and-swap protects against a concurrent commit after read.
-    return save_admin_directory(DirectoryUpdate(directory=roster,revision=body.revision),db,user)
+    saved=save_admin_directory(DirectoryUpdate(directory=roster,revision=body.revision),db,user)
+    return {'revision':saved['revision']}
 
 class StudentImportInput(BaseModel):
     class_id:str=Field(min_length=1,max_length=36)
@@ -759,14 +797,15 @@ def prepare_student_import(body,db,user):
 @app.post('/api/admin/students/import/preview')
 def student_import_preview(body:StudentImportInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):
     result,_=prepare_student_import(body,db,user)
-    return result
+    return {**result,'students':result['students'][:50],'errors':result['errors'][:50],
+            'total':len(result['students']),'error_count':len(result['errors'])}
 
 @app.post('/api/admin/students/import')
 def import_students(body:StudentImportInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):
     result,directory=prepare_student_import(body,db,user)
     if result['errors']:raise HTTPException(422,'批量导入有错误，请先修正全部错误行')
     saved=save_admin_directory(DirectoryUpdate(directory=directory,revision=body.revision),db,user)
-    return {**saved,'created':result['created'],'updated':result['updated']}
+    return {'revision':saved['revision'],'created':result['created'],'updated':result['updated']}
 
 font_lock=threading.Lock()
 def font_path():

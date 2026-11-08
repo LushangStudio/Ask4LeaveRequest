@@ -1,3 +1,4 @@
+from directory_helpers import read_directory
 import copy
 import pytest
 from sqlalchemy.orm import Session
@@ -10,11 +11,11 @@ from test_workflow import login
 
 def test_batch_import_preview_and_upsert_persist_only_after_confirmation(admin_client):
     c,_=admin_client;login(c,'admin-only')
-    state=c.get('/api/admin/directory').json()
+    state=read_directory(c)
     body={'revision':state['revision'],'class_id':class_uuid('class-a'),'text':'学号,专业\n0000123,工商管理\nstudent-b,工商管理'}
     preview=c.post('/api/admin/students/import/preview',json=body).json()
     assert preview['errors']==[] and preview['created']==1 and preview['updated']==1
-    assert c.get('/api/admin/directory').json()==state
+    assert read_directory(c)==state
     saved=c.post('/api/admin/students/import',json=body)
     assert saved.status_code==200,saved.text
     with Session(m.engine) as db:
@@ -32,19 +33,19 @@ def test_batch_import_preview_and_upsert_persist_only_after_confirmation(admin_c
 ])
 def test_invalid_bulk_rows_are_reported_without_partial_import(admin_client,text,message):
     c,_=admin_client;login(c,'student-a')
-    state=c.get('/api/admin/directory').json()
+    state=read_directory(c)
     directory=DirectoryConfig.model_validate(state['directory'])
     result,_=preview_import(text,directory,class_uuid("class-a"))
     assert any(message in e['message'] for e in result['errors'])
     if text:
         body={'text':text,'revision':state['revision'],'class_id':class_uuid('class-a')}
         assert c.post('/api/admin/students/import',json=body).status_code==422
-    assert c.get('/api/admin/directory').json()==state
+    assert read_directory(c)==state
 
 
 def test_counselor_can_be_imported_as_student_with_self_class(admin_client):
     c,_=admin_client;login(c,'admin-only')
-    state=c.get('/api/admin/directory').json()
+    state=read_directory(c)
     result=c.post('/api/admin/students/import',json={'revision':state['revision'],'class_id':class_uuid('class-a'),'text':'counselor-a,工商管理'})
     assert result.status_code==200,result.text
     login(c,'counselor-a')
@@ -53,7 +54,7 @@ def test_counselor_can_be_imported_as_student_with_self_class(admin_client):
 
 def test_bulk_endpoints_reject_non_admin(admin_client):
     c,_=admin_client;login(c,'student-a')
-    state=c.get('/api/admin/directory').json();login(c,'student-b')
+    state=read_directory(c);login(c,'student-b')
     body={'revision':state['revision'],'class_id':class_uuid('class-a'),'text':'a,专业'}
     for route in ['preview','']:
         assert c.post('/api/admin/students/import'+('/'+route if route else ''),json=body).status_code==403
@@ -61,7 +62,7 @@ def test_bulk_endpoints_reject_non_admin(admin_client):
 
 def test_csv_preserves_leading_zeroes_and_quoted_commas(admin_client):
     c,_=admin_client;login(c,'admin-only')
-    state=c.get('/api/admin/directory').json()
+    state=read_directory(c)
     result,_=preview_import('\ufeff000123,"专业,方向"',DirectoryConfig.model_validate(state['directory']),class_uuid('class-a'))
     assert result['errors']==[] and result['students'][0]['user_id']=='000123'
     assert result['students'][0]['major']=='专业,方向'

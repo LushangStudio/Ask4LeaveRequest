@@ -1,3 +1,4 @@
+from directory_helpers import read_directory
 import copy
 import json
 from uuid import UUID
@@ -34,8 +35,8 @@ def test_ambiguous_legacy_class_refuses_to_guess():
 def test_class_changes_flow_to_new_requests_only(admin_client):
     c,_=admin_client;login(c,'student-a')
     old=submit(c)
-    state=c.get('/api/admin/directory').json()
-    group=state['directory']['classes'][0]
+    state=read_directory(c)
+    group=next(c for c in state['directory']['classes'] if c['class_id']==class_uuid('class-a'))
     group.update(name='新班名',grade='2027',department='新院系')
     assert c.post('/api/admin/directory',json=state).status_code==200
     profile=c.get('/api/me').json()['profile']
@@ -49,18 +50,18 @@ def test_class_changes_flow_to_new_requests_only(admin_client):
 
 def test_import_requires_selected_existing_class(admin_client):
     c,_=admin_client;login(c,'admin-only')
-    state=c.get('/api/admin/directory').json()
+    state=read_directory(c)
     body={'revision':state['revision'],'text':'0001,专业'}
     assert c.post('/api/admin/students/import',json=body).status_code==422
     body['class_id']=class_uuid('nonexistent')
     assert c.post('/api/admin/students/import',json=body).status_code==422
-    assert c.get('/api/admin/directory').json()==state
+    assert read_directory(c)==state
 
 
 def test_failed_save_rolls_back_normalized_tables(admin_client,monkeypatch):
     c,_=admin_client;login(c,'admin-only')
-    state=c.get('/api/admin/directory').json()
-    group=state['directory']['classes'][0]
+    state=read_directory(c)
+    group=next(c for c in state['directory']['classes'] if c['class_id']==class_uuid('class-a'))
     old=group['department'];group['department']='不能保存'
     real=Session.commit
     def fail(db):
@@ -76,7 +77,7 @@ def test_failed_save_rolls_back_normalized_tables(admin_client,monkeypatch):
 
 def test_relation_removal_revokes_counselor_membership(admin_client):
     c,_=admin_client;login(c,'admin-only')
-    state=c.get('/api/admin/directory').json()
+    state=read_directory(c)
     state['directory']['class_counselors']=[r for r in state['directory']['class_counselors'] if r['user_id']!='counselor-c']
     assert c.post('/api/admin/directory',json=state).status_code==200
     assert c.post('/api/demo/login',json={'person_id':'counselor-c'}).status_code==400

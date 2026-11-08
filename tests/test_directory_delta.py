@@ -1,3 +1,4 @@
+from directory_helpers import read_directory
 import copy
 from sqlalchemy import event, select, func
 from sqlalchemy.orm import Session
@@ -8,7 +9,7 @@ from test_workflow import login
 
 
 def state(c):
-    return c.get('/api/admin/directory').json()
+    return read_directory(c)
 
 
 def patch(c, snapshot, **changes):
@@ -27,14 +28,15 @@ def test_incremental_student_update_does_not_rebuild_tables(admin_client):
     finally:event.remove(m.engine,'before_cursor_execute',capture)
     assert response.status_code==200,response.text
     expected=copy.deepcopy(before['directory']);expected['students'][0]=student
-    assert response.json()['directory']==expected
+    assert set(response.json())=={'revision'}
+    assert state(c)['directory']==expected
     assert not any(sql.startswith('delete from directory_') or sql.startswith('delete from class_counselors') for sql in statements)
     assert not any(sql.startswith('insert into directory_students ') or sql.startswith('insert into directory_classes ') for sql in statements)
     with Session(m.engine) as db:
         assert db.get(m.DirectoryStudent,student['user_id']).major=='增量专业'
         assert db.scalar(select(func.count()).select_from(m.DirectoryAudit))==1
     assert patch(c,before,deleted_students=[student['user_id']]).status_code==409
-    assert state(c)==response.json()
+    assert state(c)['revision']==response.json()['revision']
 
 
 def test_add_move_delete_classes_and_students_atomically(admin_client):
@@ -43,7 +45,7 @@ def test_add_move_delete_classes_and_students_atomically(admin_client):
     group={'class_id':cid,'name':'增量班级','grade':'2026','department':'管理学院','counselor_ids':['staff-delta']}
     student={'user_id':'delta-student','major':'测试专业','class_id':cid}
     result=patch(c,before,classes=[group],students=[student]);assert result.status_code==200,result.text
-    saved=result.json()
+    saved=state(c)
     # A referenced class cannot disappear; validation rolls back the whole delta.
     assert patch(c,saved,deleted_classes=[cid]).status_code==422
     assert state(c)==saved
@@ -53,15 +55,15 @@ def test_add_move_delete_classes_and_students_atomically(admin_client):
         assert db.get(m.DirectoryClass,cid) is None
         assert db.get(m.DirectoryStudent,student['user_id']).class_id==moved['class_id']
         assert db.get(m.DirectoryMember,'staff-delta') is None
-    result=patch(c,result.json(),deleted_students=[student['user_id']]);assert result.status_code==200
-    assert result.json()['directory']==before['directory']
+    result=patch(c,state(c),deleted_students=[student['user_id']]);assert result.status_code==200
+    assert state(c)['directory']==before['directory']
 
 
 def test_delta_permissions_validation_and_noop(admin_client):
     c,_=admin_client
     assert patch(c,{'revision':'a'*64}).status_code==401
     login(c,'admin-only');before=state(c)
-    assert patch(c,before).json()==before
+    assert patch(c,before).json()=={'revision':before['revision']}
     with Session(m.engine) as db:assert db.scalar(select(func.count()).select_from(m.DirectoryAudit))==0
     student=before['directory']['students'][0]
     assert patch(c,before,students=[student,student]).status_code==422

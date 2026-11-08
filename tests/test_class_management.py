@@ -1,3 +1,4 @@
+from directory_helpers import read_directory
 import copy
 import json
 import os
@@ -29,7 +30,7 @@ def admin_client(tmp_path,monkeypatch):
 def test_only_configured_admin_can_access_directory(admin_client):
     c,_=admin_client
     assert c.get('/api/admin/directory').status_code==401
-    login(c,'student-a');state=c.get('/api/admin/directory').json()
+    login(c,'student-a');state=read_directory(c)
     assert c.get('/api/me').json()['is_admin'] is True
     for uid in ['student-b','counselor-a']:
         login(c,uid)
@@ -45,7 +46,7 @@ def test_only_configured_admin_can_access_directory(admin_client):
 
 def test_create_edit_remove_and_restart_persistence(admin_client):
     c,path=admin_client;login(c,'admin-only')
-    state=c.get('/api/admin/directory').json();data=state['directory']
+    state=read_directory(c);data=state['directory']
     data['class_counselors'].append({'class_id':class_uuid('new-class'),'user_id':'staff-new'})
     data['classes'].append({'class_id':class_uuid('new-class'),'name':'新班级','grade':'2026','department':'管理学院'})
     data['students'].append({'user_id':'student-new','class_id':class_uuid('new-class'),'major':'测试专业'})
@@ -64,7 +65,7 @@ def test_create_edit_remove_and_restart_persistence(admin_client):
     assert c.post('/api/demo/login',json={'person_id':'student-new'}).status_code==400
     with TestClient(m.app) as restarted:
         login(restarted,'admin-only')
-        assert restarted.get('/api/admin/directory').json()['directory']==removed['directory']
+        assert read_directory(restarted)['directory']==removed['directory']
     with Session(m.engine) as db:
         assert db.scalar(select(func.count()).select_from(m.DirectoryAudit))==3
         assert db.get(m.Person,'student-new') is not None
@@ -74,19 +75,19 @@ def test_create_edit_remove_and_restart_persistence(admin_client):
 
 def test_stale_revision_and_invalid_references_preserve_roster(admin_client):
     c,path=admin_client;login(c,'student-a')
-    old=c.get('/api/admin/directory').json();changed=copy.deepcopy(old)
+    old=read_directory(c);changed=copy.deepcopy(old)
     changed['directory']['classes'][0]['name']='修改班级'
     assert c.post('/api/admin/directory',json=changed).status_code==200
     assert c.post('/api/admin/directory',json=old).status_code==409
-    before=c.get('/api/admin/directory').json();bad=copy.deepcopy(before)
+    before=read_directory(c);bad=copy.deepcopy(before)
     bad['directory']['class_counselors']=[]
     assert c.post('/api/admin/directory',json=bad).status_code==422
-    assert c.get('/api/admin/directory').json()==before
+    assert read_directory(c)==before
 
 
 def test_save_failure_rolls_back_directory_and_people(admin_client,monkeypatch):
     c,path=admin_client;login(c,'student-a')
-    before=c.get('/api/admin/directory').json();state=copy.deepcopy(before)
+    before=read_directory(c);state=copy.deepcopy(before)
     state['directory']['students'][0]['major']='不能生效的专业'
     real_commit=Session.commit
     def fail_commit(db):
@@ -94,7 +95,7 @@ def test_save_failure_rolls_back_directory_and_people(admin_client,monkeypatch):
         return real_commit(db)
     monkeypatch.setattr(Session,'commit',fail_commit)
     assert c.post('/api/admin/directory',json=state).status_code==503
-    assert c.get('/api/admin/directory').json()==before
+    assert read_directory(c)==before
     with Session(m.engine) as db:
         assert db.get(m.Person,'student-a').name==''
         assert db.scalar(select(func.count()).select_from(m.DirectoryAudit))==0
@@ -102,7 +103,7 @@ def test_save_failure_rolls_back_directory_and_people(admin_client,monkeypatch):
 
 def test_retired_json_changes_are_ignored(admin_client):
     c,path=admin_client;login(c,'admin-only')
-    state=c.get('/api/admin/directory').json()
+    state=read_directory(c)
     path.write_bytes(path.read_bytes()+b'\n')
     assert c.post('/api/admin/directory',json=state).status_code==200
 
@@ -131,12 +132,12 @@ def test_legacy_import_is_idempotent_and_refuses_overwriting_online_data(admin_c
     env={**os.environ,'DATABASE_URL':str(m.engine.url)}
     imported=subprocess.run(args,env=env,capture_output=True,text=True)
     assert imported.returncode==0,imported.stderr
-    before=c.get('/api/admin/directory').json()
+    before=read_directory(c)
     data=json.loads(path.read_text());data['classes'][0]['name']='旧文件试图覆盖在线名单'
     path.write_text(json.dumps(data))
     refused=subprocess.run(args,env=env,capture_output=True,text=True)
     assert refused.returncode==1 and '拒绝覆盖' in refused.stderr
-    assert c.get('/api/admin/directory').json()==before
+    assert read_directory(c)==before
 
 
 def test_production_ignores_relationship_files_after_restart(production,tmp_path):
@@ -170,9 +171,11 @@ def test_restart_scrubs_legacy_student_names_without_changing_requests(admin_cli
         db.commit()
     with TestClient(m.app) as restarted:
         login(restarted,'admin-only')
-        data=restarted.get('/api/admin/directory').json()
+        data=read_directory(restarted)
         assert all('name' not in s for s in data['directory']['students'])
-        assert data['revision']==m.directory_digest(data['directory'])
+        with Session(m.engine) as db:
+            stored=db.get(m.DirectoryState,1)
+            assert data['revision']==m.directory_digest(stored.directory)
     with Session(m.engine) as db:
         assert db.get(m.Person,'student-a').name==''
         assert db.get(m.Person,'retired-student').name==''

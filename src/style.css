@@ -1222,3 +1222,25 @@ button.danger:hover:not(:disabled) {
     top: 0;
   }
 }
+
+.directory-picker {
+  min-width: 0;
+  margin-bottom: 12px;
+}
+.student-filters > .directory-picker {
+  flex: 1 1 220px;
+}
+.directory-picker details {
+  margin-top: 4px;
+  font-size: 12px;
+}
+.directory-picker summary {
+  cursor: pointer;
+  color: #475569;
+}
+.directory-picker .actions {
+  margin-top: 6px;
+}
+.directory-picker input {
+  width: min(220px, 100%);
+}
