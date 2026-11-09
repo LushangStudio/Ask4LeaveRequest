@@ -904,7 +904,7 @@ def render_pdf(row,decision,items,signature=None,draft=False):
     if row.mode == 'date_range':
         narrative=f'该生因{reason}，经辅导员审核，{agreement}其于{chinese_date(row.starts)}至{chinese_date(row.ends)}请假，共 {days} 天。'
     elif row.mode == 'items':
-        clauses=[f'于{chinese_date(item.day)}{item.time}请假{item.title}' for item in items]
+        clauses=[f'申请于{chinese_date(item.day)}{item.time}请假{item.title}' for item in items]
         narrative=f'该生因{reason}，'+ '；'.join(clauses)+'。'
     else:
         # Preserve existing applications and their historical document wording.

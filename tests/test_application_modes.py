@@ -28,13 +28,13 @@ def test_modes_preview_approval_and_pdf(client,mode,layout,count):
     preview=client.post('/api/requests/'+row['id']+'/preview',json={}).json()
     text=pdf_text(client.get(f"/api/previews/{preview['id']}/0"))
     assert '审批前预览' in text
-    assert ('该生因参加学术交流，经辅导员审核' if mode=='date_range' else '该生因参加学术交流，于') in text
+    assert ('该生因参加学术交流，经辅导员审核' if mode=='date_range' else '该生因参加学术交流，申请于') in text
     result=approve(client,row['id']).json()
     assert len(result['documents'])==count
     for index,doc in enumerate(result['documents']):
         text=pdf_text(client.get('/api/documents/'+doc['id']))
         assert '拟同意' not in text
-        assert ('该生因参加学术交流，经辅导员审核' if mode=='date_range' else '该生因参加学术交流，于') in text
+        assert ('该生因参加学术交流，经辅导员审核' if mode=='date_range' else '该生因参加学术交流，申请于') in text
         if mode=='date_range':
             assert '共 3 天' in text and '组织行为学' not in text
         else:
@@ -120,6 +120,6 @@ def test_items_pdf_uses_requested_wording_without_type_or_typed_signature(client
     approved=approve(client,row['id']).json()
     assert approved['approval']['approver']=='counselor-a'
     text=pdf_text(client.get('/api/documents/'+approved['documents'][0]['id']))
-    assert '该生因参加学术交流，于2026 年 10 月 1 日第 1-2 节请假组织行为学。' in text
+    assert '该生因参加学术交流，申请于2026 年 10 月 1 日第 1-2 节请假组织行为学。' in text
     assert 'counselor-a' not in text and '辅导员签字' in text
     assert '事项类型' not in text and '志愿者活动' not in text

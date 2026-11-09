@@ -1,5 +1,6 @@
 <script setup>
 import { computed, reactive, ref } from "vue";
+import { itemDate } from "../request-display.js";
 
 const props = defineProps({
   busy: Boolean,
@@ -272,14 +273,13 @@ async function submit() {
           该生因{{
             form.reason.trim().replace(/[。.!！?？;；]+$/u, "")
           }}，<template v-for="(item, index) in form.items" :key="item.id"
-            >{{ index ? "；" : "" }}于{{ item.day }}{{ item.time }}请假{{
-              item.title
-            }}</template
+            >{{ index ? "；" : "" }}于{{ itemDate(item.day)
+            }}{{ item.time }}请假{{ item.title }}</template
           >。
         </p>
         <ol>
           <li v-for="item in form.items" :key="item.id">
-            {{ item.day }} · {{ item.time }} · {{ item.title }}
+            {{ itemDate(item.day) }} · {{ item.time }} · {{ item.title }}
           </li>
         </ol>
         <p>
