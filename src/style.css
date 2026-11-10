@@ -863,14 +863,12 @@ button.danger:hover:not(:disabled) {
   margin-top: 16px;
   flex-wrap: wrap;
 }
-.preview-dialog.request-dialog,
-.preview-dialog.submission-dialog {
+.preview-dialog.request-dialog {
   padding: 0;
   overflow: hidden;
   max-height: 92dvh;
 }
-.request-dialog[open],
-.submission-dialog[open] {
+.request-dialog[open] {
   display: flex;
   flex-direction: column;
 }
@@ -969,8 +967,29 @@ button.danger:hover:not(:disabled) {
   background: #1d4ed8;
   color: white;
 }
-.submission-dialog {
+.preview-dialog.submission-dialog {
   width: min(800px, calc(100% - 24px));
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+  padding: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+/* Keep the preview text in normal flow so an auto-height dialog can size to it. */
+.submission-dialog > .dialog-body {
+  overflow: visible;
+}
+.submission-dialog > .dialog-header,
+.submission-dialog > .dialog-footer {
+  position: sticky;
+  z-index: 1;
+  background: white;
+}
+.submission-dialog > .dialog-header {
+  top: 0;
+}
+.submission-dialog > .dialog-footer {
+  bottom: 0;
 }
 @media (max-width: 1000px) {
   .application-columns {
