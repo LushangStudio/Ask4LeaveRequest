@@ -10,3 +10,4 @@ dist/
 config/relationships.json
 tmp/
 output/
+assets/fonts/*.ttf

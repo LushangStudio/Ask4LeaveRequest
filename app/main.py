@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import secrets
-import threading
 import uuid
 import base64
 import binascii
@@ -17,7 +16,6 @@ from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from typing import Literal
 from types import SimpleNamespace
-from xml.sax.saxutils import escape
 from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit, quote
 
@@ -35,10 +33,10 @@ from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY, TA_RIGHT
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.platypus import Image as PDFImage, KeepTogether
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
+from app.pdf_fonts import font_path, document_font, paragraph_text
 from app.attachments import AttachmentInput, MAX_APPLICATION_BODY
 from app.attachment_retention import expired as attachments_expired, retained_through
 from app.http_limits import HTTPResourceLimits
@@ -807,31 +805,6 @@ def import_students(body:StudentImportInput,db:Session=Depends(db_session),user:
     saved=save_admin_directory(DirectoryUpdate(directory=directory,revision=body.revision),db,user)
     return {'revision':saved['revision'],'created':result['created'],'updated':result['updated']}
 
-font_lock=threading.Lock()
-def font_path():
-    candidates=[os.getenv('PDF_FONT_PATH',''),'/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc','/System/Library/Fonts/STHeiti Light.ttc']
-    for path in candidates:
-        if path and Path(path).is_file(): return path
-    raise RuntimeError('未找到可嵌入的中文字体，请配置 PDF_FONT_PATH')
-
-def font_name():
-    with font_lock:
-        if 'LeaveChinese' in pdfmetrics.getRegisteredFontNames(): return 'LeaveChinese'
-        pdfmetrics.registerFont(TTFont('LeaveChinese',font_path())); return 'LeaveChinese'
-
-def document_font(kind):
-    name = 'LeaveDocumentBody' if kind == 'body' else 'LeaveDocumentHeading'
-    override = os.getenv('PDF_BODY_FONT_PATH' if kind == 'body' else 'PDF_TITLE_FONT_PATH', '')
-    candidates = ([override, '/usr/share/fonts/truetype/arphic/uming.ttc', '/System/Library/Fonts/Supplemental/Songti.ttc']
-                  if kind == 'body' else [override, '/System/Library/Fonts/STHeiti Medium.ttc'])
-    with font_lock:
-        if name in pdfmetrics.getRegisteredFontNames(): return name
-        path = next((path for path in candidates if path and Path(path).is_file()), font_path())
-        # Apple's Songti collection starts with Black; index 6 is SC Regular.
-        subfont = 6 if kind == 'body' and path == '/System/Library/Fonts/Supplemental/Songti.ttc' else 0
-        pdfmetrics.registerFont(TTFont(name, path, subfontIndex=subfont))
-    return name
-
 def chinese_date(value):
     day = date.fromisoformat(value)
     return f'{day.year} 年 {day.month} 月 {day.day} 日'
@@ -891,7 +864,7 @@ def render_pdf(row,decision,items,signature=None,draft=False):
     def p(text,style=body):
         # Normalize typographic time-range dashes unsupported by some embedded CJK fonts.
         printable=str(text).translate(str.maketrans({'–':'-','—':'-','‑':'-','−':'-','－':'-'}))
-        return Paragraph(escape(printable).replace('\n','<br/>'),style)
+        return Paragraph(paragraph_text(printable,style.fontName),style)
     student=row.snapshot
     class_text=f"；班级：{student['class_name']}" if student.get('class_name') else ''
     identity=(f"兹证明，复旦大学{student['college']}{student['major']}专业{student['grade']}级学生"
@@ -914,7 +887,7 @@ def render_pdf(row,decision,items,signature=None,draft=False):
             narrative+=f'本请假条适用于{chinese_date(item.day)}（{item.time}）的“{item.title}”{names[item.kind]}。'
     if decision.opinion and decision.opinion.strip() not in {'同意','同意。'}:
         narrative+=f'辅导员审批意见为：“{decision.opinion.strip().rstrip("。")}”。'
-    story=[Paragraph('请 假 条',title),p(identity),p(narrative)]
+    story=[p('请 假 条',title),p(identity),p(narrative)]
     if len(items)>1 and row.mode != 'items':
         story.append(p('请假以下事项：',closing))
         rows=[[p('序号',centered),p('类型',centered),p('请假事项',centered),p('日期',centered),p('节次 / 时间',centered)]]

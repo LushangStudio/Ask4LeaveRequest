@@ -22,9 +22,9 @@ python3 -m venv .venv
 APP_MODE=demo .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8001 --workers 1
 ```
 
-打开 <http://127.0.0.1:8001/>。数据库默认保存到 `var/leave.db`，重启后记录保留。macOS 自动使用系统黑体；Ubuntu 先安装 `fonts-wqy-zenhei`，或设置 `PDF_FONT_PATH` 为可嵌入的中文 TTF/TTC 字体。字体仅用于运行时读取，不随仓库分发。
+打开 <http://127.0.0.1:8001/>。数据库默认保存到 `var/leave.db`，重启后记录保留。macOS 自动使用系统黑体；Ubuntu 先安装 `fonts-wqy-zenhei`，或设置 `PDF_FONT_PATH` 为可嵌入的中文 TTF/TTC 字体。此通用字体也用于签名水印和文书缺字回退。
 
-文书正文优先使用可嵌入的宋体（macOS 的 Songti SC Regular），标题使用黑体。可用 `PDF_BODY_FONT_PATH` 和 `PDF_TITLE_FONT_PATH` 分别指定字体；没有对应字体时回退到 `PDF_FONT_PATH`/已有中文字体。Ubuntu 可额外安装 `fonts-arphic-uming` 使用宋体，原有黑体回退仍可运行。
+文书标题优先使用小标宋（方正小标宋简），正文优先使用仿宋 GB2312。本地可将字库分别放到 `assets/fonts/FZXiaoBiaoSong.ttf`、`assets/fonts/FangSong_GB2312.ttf`；生产环境可将字库放在 `/etc/ask4leave/fonts/`，通过 `PDF_TITLE_FONT_PATH` 和 `PDF_BODY_FONT_PATH` 指定绝对路径。字库文件不随仓库分发。文书字体缺失或不可载入时，回退到可用的系统字体或 `PDF_FONT_PATH`；单字缺失时尝试使用通用中文字体绘制该字。已生成的历史 PDF 保持原样。
 
 与首页联动：另一个终端进入相邻 `Lushangstudio-Home`，运行 `python3 scripts/serve.py`，打开 <http://127.0.0.1:8080/>。此本地入口将 `/leave/` 代理至 8001，不改变线上站点。
 
