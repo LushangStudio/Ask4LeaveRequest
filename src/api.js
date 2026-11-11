@@ -29,6 +29,8 @@ export async function api(
     headers: body === undefined ? {} : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  if (response.ok && response.headers.get("content-type") === "application/zip")
+    return response.blob();
   const data = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = data?.detail;

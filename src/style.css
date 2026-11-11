@@ -1263,3 +1263,32 @@ button.danger:hover:not(:disabled) {
 .directory-picker input {
   width: min(220px, 100%);
 }
+
+.review-filters,
+.batch-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.review-filters label,
+.batch-toolbar label {
+  margin: 0;
+}
+.review-search {
+  flex: 1 1 220px;
+}
+.batch-toolbar {
+  align-items: center;
+}
+.batch-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.batch-check input,
+.batch-row-check {
+  width: auto;
+  margin: 0 6px 0 0;
+}

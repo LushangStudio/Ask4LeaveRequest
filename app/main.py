@@ -6,6 +6,7 @@ import logging
 import os
 import secrets
 import uuid
+import zipfile
 import base64
 import binascii
 import warnings
@@ -23,7 +24,7 @@ from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, Query, Re
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import (JSON, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, func,
+from sqlalchemy import (JSON, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, Index, func, or_,
                         create_engine, select, update, event, inspect, text)
 from sqlalchemy.dialects.mysql import MEDIUMBLOB
 from sqlalchemy.exc import IntegrityError
@@ -86,7 +87,11 @@ class OAuthState(Base):
     expires: Mapped[datetime] = mapped_column(DateTime,index=True)
 class Request(Base):
     __tablename__ = 'leave_requests'
-    __table_args__ = (UniqueConstraint('student_id', 'idempotency_key'),)
+    __table_args__ = (
+        UniqueConstraint('student_id', 'idempotency_key'),
+        Index('ix_leave_requests_ends_starts', 'ends', 'starts'),
+        Index('ix_leave_requests_created_id', 'created', 'id'),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     student_id: Mapped[str] = mapped_column(ForeignKey('people.id'))
     counselor_id: Mapped[str] = mapped_column(ForeignKey('people.id'))
@@ -113,6 +118,7 @@ class PDFJob(Base):
 
 class Item(Base):
     __tablename__ = 'leave_items'
+    __table_args__ = (Index('ix_leave_items_request_day', 'request_id', 'day'),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     request_id: Mapped[str] = mapped_column(ForeignKey('leave_requests.id'), index=True)
     position: Mapped[int]
@@ -329,6 +335,13 @@ async def lifespan(app):
             raise RuntimeError('Apply migration 011-application-mode before starting this release')
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE leave_requests ADD COLUMN mode VARCHAR(16) NOT NULL DEFAULT 'legacy'"))
+    if engine.dialect.name == 'sqlite':
+        # create_all does not add indexes to existing local tables.
+        review_indexes = {'ix_leave_requests_ends_starts', 'ix_leave_requests_created_id', 'ix_leave_items_request_day'}
+        for model in (Request, Item):
+            for index in model.__table__.indexes:
+                if index.name in review_indexes:
+                    index.create(engine, checkfirst=True)
     with Session(engine) as db:
         state=db.get(DirectoryState,1)
         if state is None:
@@ -688,6 +701,50 @@ def listing(view:Literal['student','counselor']|None=None,db:Session=Depends(db_
     scope = Request.student_id==user.id if role=='student' else select(RequestCounselor).where(RequestCounselor.request_id==Request.id,RequestCounselor.counselor_id==user.id).exists()
     query=select(Request).where(scope).order_by(Request.created.desc())
     return [serialize(db,row) for row in db.scalars(query)]
+class ReviewListInput(BaseModel):
+    page: int = Field(default=1, ge=1)
+    query: str = Field(default='', max_length=100)
+    starts: date | None = None
+    ends: date | None = None
+
+    @model_validator(mode='after')
+    def validate_range(self):
+        if self.starts and self.ends and self.starts > self.ends:
+            raise ValueError('筛选开始日期不能晚于结束日期')
+        return self
+
+
+@app.post('/api/requests/review-list')
+def review_list(body: ReviewListInput, db: Session = Depends(db_session), user: Person = Depends(current_user)):
+    require_counselor(user)
+    # Use the existing counselor_id index to restrict the search to assigned requests.
+    scope = select(Request).join(RequestCounselor, RequestCounselor.request_id == Request.id)
+    scope = scope.where(RequestCounselor.counselor_id == user.id)
+    if query := body.query.strip():
+        title_matches = select(Item.id).where(
+            Item.request_id == Request.id, Item.title.contains(query, autoescape=True),
+        ).exists()
+        scope = scope.where(or_(Request.snapshot['name'].as_string().contains(query, autoescape=True),
+                               Request.reason.contains(query, autoescape=True), title_matches))
+    if body.starts or body.ends:
+        item_days = select(Item.id).where(Item.request_id == Request.id)
+        if body.starts:
+            start = body.starts.isoformat()
+            scope = scope.where(Request.ends >= start)
+            item_days = item_days.where(Item.day >= start)
+        if body.ends:
+            end = body.ends.isoformat()
+            scope = scope.where(Request.starts <= end)
+            item_days = item_days.where(Item.day <= end)
+        # A multi-item request only matches days with an actual leave item.
+        scope = scope.where(or_(Request.mode != 'items', item_days.exists()))
+    total = db.scalar(select(func.count()).select_from(scope.with_only_columns(Request.id).subquery()))
+    pages = max(1, (total + 9) // 10)
+    page = min(body.page, pages)
+    rows = db.scalars(scope.order_by(Request.created.desc(), Request.id.desc()).limit(10).offset((page - 1) * 10))
+    return {'records': [serialize(db, row) for row in rows], 'page': page, 'pages': pages, 'total': total}
+
+
 @app.get('/api/requests/{rid}')
 def detail(rid:str,db:Session=Depends(db_session),user:Person=Depends(current_user)):
     return serialize(db,authorized(db,rid,user))
@@ -959,6 +1016,26 @@ class DecisionInput(BaseModel):
         self.opinion=self.opinion.strip()
         if self.outcome=='rejected' and not self.opinion: raise ValueError('驳回时须填写原因')
         return self
+def store_decision(db, rid, user, outcome, opinion, signature_snapshot):
+    """Record an approval/rejection inside the caller's transaction."""
+    changed = db.execute(update(Request).where(Request.id == rid, Request.status == 'pending')
+                         .values(status=outcome)).rowcount
+    if not changed:
+        db.rollback()
+        raise HTTPException(409, '申请已由另一个请求处理，请刷新')
+    db.add(Decision(request_id=rid, approver_id=user.id, approver_name=user.name,
+                    outcome=outcome, opinion=opinion, at=datetime.now(timezone.utc).isoformat()))
+    db.flush()
+    if signature_snapshot:
+        data = signature_snapshot.signature_content
+        db.add(ApprovalSignature(request_id=rid, signature_version=signature_snapshot.signature_version,
+                                 content=data, digest=hashlib.sha256(data).hexdigest(), watermark=signature_snapshot.watermark))
+    db.query(ApprovalPreview).filter(ApprovalPreview.request_id == rid).delete()
+    from app.pdf_jobs import async_enabled, enqueue
+    if outcome == 'approved' and async_enabled():
+        enqueue(db, rid)
+
+
 @app.post('/api/requests/{rid}/decision')
 def decide(rid:str,body:DecisionInput,db:Session=Depends(db_session),user:Person=Depends(current_user)):
     authorized(db,rid,user)
@@ -977,20 +1054,94 @@ def decide(rid:str,body:DecisionInput,db:Session=Depends(db_session),user:Person
             or preview.expires < datetime.now(timezone.utc).replace(tzinfo=None)
             or preview.signature_version!=signature.version or preview.opinion!=body.opinion):
             raise HTTPException(409,'请重新预览请假条，确认当前签名和审批意见后再通过')
-    changed=db.execute(update(Request).where(Request.id==rid,Request.status=='pending').values(status=body.outcome)).rowcount
-    if not changed: db.rollback(); raise HTTPException(409,'申请已由另一个请求处理，请刷新')
-    db.add(Decision(request_id=rid,approver_id=user.id,approver_name=user.name,outcome=body.outcome,opinion=body.opinion,at=datetime.now(timezone.utc).isoformat()))
-    db.flush()
-    if preview:
-        db.add(ApprovalSignature(request_id=rid,signature_version=preview.signature_version,content=preview.signature_content,
-                                 digest=hashlib.sha256(preview.signature_content).hexdigest(),watermark=preview.watermark))
-    db.query(ApprovalPreview).filter(ApprovalPreview.request_id==rid).delete()
-    from app.pdf_jobs import async_enabled, enqueue
-    if body.outcome=='approved' and async_enabled(): enqueue(db,rid)
+    store_decision(db, rid, user, body.outcome, body.opinion, preview)
+    from app.pdf_jobs import async_enabled
     db.commit()
     if body.outcome=='approved' and not async_enabled(): generate(rid)
     db.expire_all()
     return serialize(db,db.get(Request,rid))
+
+class BatchSelection(BaseModel):
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=10)
+
+    @model_validator(mode='after')
+    def unique_ids(self):
+        if len(self.ids) != len(set(self.ids)):
+            raise ValueError('不能重复选择同一份申请')
+        return self
+
+
+class BatchApprovalInput(BatchSelection):
+    signature_version: uuid.UUID
+    opinion: str = Field(default='', max_length=2000)
+
+
+def batch_requests(db, user, ids, *, lock=False):
+    require_counselor(user)
+    request_ids = [str(rid) for rid in ids]
+    assigned = set(db.scalars(select(RequestCounselor.request_id).where(
+        RequestCounselor.counselor_id == user.id, RequestCounselor.request_id.in_(request_ids))))
+    if assigned != set(request_ids):
+        raise HTTPException(404, '部分申请不存在或无权操作')
+    # Stable request locking order also matches single approval and withdrawal.
+    query = select(Request).where(Request.id.in_(request_ids)).order_by(Request.id)
+    if lock:
+        query = query.with_for_update()
+    rows = {row.id: row for row in db.scalars(query)}
+    if len(rows) != len(request_ids):
+        raise HTTPException(404, '部分申请不存在或无权操作')
+    return [rows[rid] for rid in request_ids]
+
+
+@app.post('/api/requests/batch-approve')
+def batch_approve(body: BatchApprovalInput, db: Session = Depends(db_session), user: Person = Depends(current_user)):
+    rows = batch_requests(db, user, body.ids, lock=True)
+    if any(row.status != 'pending' for row in rows):
+        raise HTTPException(409, '部分申请已处理或撤回，本批未提交，请刷新列表')
+    signature = db.scalar(select(Signature).where(Signature.counselor_id == user.id).with_for_update())
+    if not signature or signature.version != str(body.signature_version):
+        raise HTTPException(409, '签名缺失或已更新，请刷新后确认当前签名')
+    for row in rows:
+        watermark = signature_watermark(row)
+        snapshot = SimpleNamespace(signature_version=signature.version,
+                                   signature_content=watermarked_signature(signature.content, watermark),
+                                   watermark=watermark)
+        store_decision(db, row.id, user, 'approved', body.opinion.strip(), snapshot)
+    ids = [row.id for row in rows]
+    db.commit()
+    from app.pdf_jobs import async_enabled
+    if not async_enabled():
+        for rid in ids:
+            generate(rid)
+    return {'approved': len(ids)}
+
+
+@app.post('/api/requests/batch-export')
+def batch_export(body: BatchSelection, db: Session = Depends(db_session), user: Person = Depends(current_user)):
+    rows = batch_requests(db, user, body.ids)
+    if any(row.status != 'approved' or row.file_status != 'ready' for row in rows):
+        raise HTTPException(409, '只能导出已通过且 PDF 已生成的申请，请刷新列表')
+    ids = [row.id for row in rows]
+    files = select(Document).where(Document.request_id.in_(ids))
+    size = db.scalar(select(func.sum(func.length(Document.content))).where(Document.request_id.in_(ids))) or 0
+    max_bytes = 32 * 1024 * 1024
+    if size > max_bytes:
+        raise HTTPException(413, '本批 PDF 超过 32 MB，请减少选中申请数')
+    positions = {rid: index for index, rid in enumerate(ids, start=1)}
+    included = set()
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, 'w') as archive:
+        for doc in db.scalars(files.order_by(Document.request_id, Document.position).execution_options(yield_per=1)):
+            if output.tell() + len(doc.content) > max_bytes:
+                raise HTTPException(413, '本批 PDF 超过 32 MB，请减少选中申请数')
+            archive.writestr(f'{positions[doc.request_id]:02d}/{doc.id}.pdf', doc.content)
+            included.add(doc.request_id)
+    if included != set(ids):
+        raise HTTPException(409, '部分 PDF 尚不可用，请刷新列表')
+    return Response(output.getvalue(), media_type='application/zip', headers={
+        'Content-Disposition': 'attachment; filename="leave-documents.zip"',
+    })
+
 
 class WithdrawalInput(BaseModel):
     approval_at:str|None=Field(default=None,max_length=40)

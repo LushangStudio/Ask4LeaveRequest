@@ -91,6 +91,10 @@ CREATE TABLE leave_requests (
 );
 
 
+CREATE INDEX ix_leave_requests_ends_starts ON leave_requests (ends, starts);
+
+CREATE INDEX ix_leave_requests_created_id ON leave_requests (created, id);
+
 CREATE TABLE approval_previews (
 	id VARCHAR(36) NOT NULL,
 	request_id VARCHAR(36) NOT NULL,
@@ -152,6 +156,8 @@ CREATE TABLE leave_items (
 );
 
 CREATE INDEX ix_leave_items_request_id ON leave_items (request_id);
+
+CREATE INDEX ix_leave_items_request_day ON leave_items (request_id, day);
 
 
 CREATE TABLE request_counselors (

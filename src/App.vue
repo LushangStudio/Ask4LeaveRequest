@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { api, apiUrl } from "./api.js";
 import LeaveForm from "./components/LeaveForm.vue";
 import RequestList from "./components/RequestList.vue";
@@ -18,6 +18,74 @@ const formVersion = ref(0);
 const studentTab = ref("apply");
 const identities = ref([]);
 const signatureVersion = ref(null);
+const filterDraft = reactive({ query: "", starts: "", ends: "" });
+const reviewFilters = ref({ ...filterDraft });
+const reviewPage = ref({ page: 1, pages: 1, total: 0 });
+const filterError = computed(() =>
+  filterDraft.starts &&
+  filterDraft.ends &&
+  filterDraft.starts > filterDraft.ends
+    ? "开始日期不能晚于结束日期"
+    : "",
+);
+let searchTimer;
+function applyReviewFilters() {
+  clearTimeout(searchTimer);
+  if (viewRole.value !== "counselor" || !user.value || filterError.value)
+    return;
+  if (busy.value) {
+    scheduleSearch();
+    return;
+  }
+  reviewFilters.value = { ...filterDraft, query: filterDraft.query.trim() };
+  reviewPage.value = { page: 1, pages: 1, total: 0 };
+  run(loadRecords);
+}
+function scheduleSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(applyReviewFilters, 400);
+}
+function resetReviewFilters() {
+  clearTimeout(searchTimer);
+  Object.assign(filterDraft, { query: "", starts: "", ends: "" });
+  reviewFilters.value = { ...filterDraft };
+  reviewPage.value = { page: 1, pages: 1, total: 0 };
+}
+function changeReviewPage(page) {
+  if (busy.value) return;
+  reviewPage.value.page = page;
+  run(loadRecords);
+}
+function changeView() {
+  resetReviewFilters();
+  run(loadRecords);
+}
+function batchApprove({ ids, opinion }) {
+  return run(async () => {
+    const result = await api("requests/batch-approve", {
+      ids,
+      opinion,
+      signature_version: signatureVersion.value,
+    });
+    await loadRecords();
+    message.value = `已通过 ${result.approved} 份申请。`;
+  });
+}
+function batchExport(ids) {
+  return run(async () => {
+    const zip = await api("requests/batch-export", { ids });
+    if (!(zip instanceof Blob))
+      throw new Error("未收到 PDF 压缩包，请刷新后重试");
+    const url = URL.createObjectURL(zip);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "请假条.zip";
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  });
+}
 const runtime = ref({
   mode: "test",
   demo_login: false,
@@ -49,9 +117,22 @@ async function loadRecords() {
     const currentUser = await api("me");
     const roles = currentUser.roles || [currentUser.role];
     if (!roles.includes(viewRole.value)) viewRole.value = roles[0] || "";
-    const rows = roles.length
-      ? await api(`requests?view=${viewRole.value}`)
-      : [];
+    let rows = [];
+    if (viewRole.value === "counselor") {
+      const result = await api("requests/review-list", {
+        page: reviewPage.value.page,
+        query: reviewFilters.value.query,
+        starts: reviewFilters.value.starts || null,
+        ends: reviewFilters.value.ends || null,
+      });
+      rows = result.records;
+      reviewPage.value = {
+        page: result.page,
+        pages: result.pages,
+        total: result.total,
+      };
+    } else if (viewRole.value === "student")
+      rows = await api("requests?view=student");
     user.value = currentUser;
     identity.value = currentUser.id;
     records.value = rows;
@@ -83,6 +164,7 @@ async function run(
 function login() {
   return run(async () => {
     await api("demo/login", { person_id: identity.value });
+    resetReviewFilters();
     user.value = null;
     records.value = [];
     signatureVersion.value = null;
@@ -134,6 +216,7 @@ function withdraw({ id, reason, approval_at }) {
 function logout() {
   return run(async () => {
     await api("logout", {});
+    resetReviewFilters();
     user.value = null;
     records.value = [];
     signatureVersion.value = null;
@@ -142,7 +225,10 @@ function logout() {
   });
 }
 let pollTimer;
-onUnmounted(() => clearInterval(pollTimer));
+onUnmounted(() => {
+  clearInterval(pollTimer);
+  clearTimeout(searchTimer);
+});
 onMounted(async () => {
   pollTimer = setInterval(() => {
     if (
@@ -199,11 +285,7 @@ onMounted(async () => {
         >
         <label v-if="user?.roles?.length > 1" class="role-switch"
           >当前视角
-          <select
-            v-model="viewRole"
-            :disabled="busy"
-            @change="run(loadRecords)"
-          >
+          <select v-model="viewRole" :disabled="busy" @change="changeView">
             <option value="student">学生</option>
             <option value="counselor">辅导员</option>
           </select>
@@ -347,6 +429,54 @@ onMounted(async () => {
             刷新
           </button>
         </div>
+        <form
+          v-if="user && viewRole === 'counselor'"
+          class="review-filters"
+          @submit.prevent="applyReviewFilters"
+        >
+          <label class="review-search"
+            >搜索申请<input
+              v-model="filterDraft.query"
+              type="search"
+              maxlength="100"
+              placeholder="姓名、事项或请假原因"
+              :disabled="busy"
+              @input="scheduleSearch"
+          /></label>
+          <label
+            >请假开始日期<input
+              v-model="filterDraft.starts"
+              type="date"
+              :disabled="busy"
+              @change="applyReviewFilters"
+          /></label>
+          <label
+            >请假结束日期<input
+              v-model="filterDraft.ends"
+              type="date"
+              :disabled="busy"
+              @change="applyReviewFilters"
+          /></label>
+          <div class="actions">
+            <button type="submit" :disabled="busy || !!filterError">
+              搜索
+            </button>
+            <button
+              type="button"
+              class="light"
+              :disabled="busy"
+              @click="
+                resetReviewFilters();
+                run(loadRecords);
+              "
+            >
+              清除筛选
+            </button>
+          </div>
+          <p v-if="filterError" class="inline-error" role="alert">
+            {{ filterError }}
+          </p>
+        </form>
         <div id="records" class="records">
           <div v-if="!user" class="empty">
             <p>{{ loginHint }}</p>
@@ -357,7 +487,10 @@ onMounted(async () => {
               >使用复旦UIS登录</a
             >
           </div>
-          <div v-else-if="!records.length" class="empty">
+          <div
+            v-else-if="!records.length && viewRole !== 'counselor'"
+            class="empty"
+          >
             暂时没有申请<br /><small>提交后可在这里查看处理进度</small>
           </div>
           <RequestList
@@ -367,6 +500,11 @@ onMounted(async () => {
             :role="viewRole"
             :busy="busy"
             :signature-version="signatureVersion"
+            :review-page="viewRole === 'counselor' ? reviewPage : null"
+            :review-filters="reviewFilters"
+            @page="changeReviewPage"
+            @batch-approve="batchApprove"
+            @batch-export="batchExport"
             @decision="decide"
             @retry="retry"
             @withdraw="withdraw"
