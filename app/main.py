@@ -862,9 +862,9 @@ def import_students(body:StudentImportInput,db:Session=Depends(db_session),user:
     saved=save_admin_directory(DirectoryUpdate(directory=directory,revision=body.revision),db,user)
     return {'revision':saved['revision'],'created':result['created'],'updated':result['updated']}
 
-def chinese_date(value):
-    day = date.fromisoformat(value)
-    return f'{day.year} 年 {day.month} 月 {day.day} 日'
+def chinese_date(value: str | date) -> str:
+    day = date.fromisoformat(value) if isinstance(value, str) else value
+    return f'{day.year}年{day.month}月{day.day}日'
 
 def signature_watermark(row):
     start=row.starts.replace('-', '.')
@@ -966,7 +966,7 @@ def render_pdf(row,decision,items,signature=None,draft=False):
     signed_at=datetime.fromisoformat(decision.at).astimezone(ZoneInfo('Asia/Shanghai'))
     signing_block=[Spacer(1,23*mm),signature_row]
     if not signature:signing_block.append(p(decision.approver_name,signing))
-    signing_block.extend([Spacer(1,4*mm),p(f'{signed_at.year} 年 {signed_at.month} 月 {signed_at.day} 日',signing)])
+    signing_block.extend([Spacer(1,4*mm),p(chinese_date(signed_at.date()),signing)])
     story.append(KeepTogether(signing_block))
 
     def footer(canvas,doc):

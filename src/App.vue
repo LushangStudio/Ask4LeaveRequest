@@ -28,26 +28,23 @@ const filterError = computed(() =>
     ? "开始日期不能晚于结束日期"
     : "",
 );
-let searchTimer;
 function applyReviewFilters() {
-  clearTimeout(searchTimer);
-  if (viewRole.value !== "counselor" || !user.value || filterError.value)
+  if (
+    viewRole.value !== "counselor" ||
+    !user.value ||
+    filterError.value ||
+    busy.value
+  )
     return;
-  if (busy.value) {
-    scheduleSearch();
-    return;
-  }
   reviewFilters.value = { ...filterDraft, query: filterDraft.query.trim() };
   reviewPage.value = { page: 1, pages: 1, total: 0 };
   run(loadRecords);
 }
-function scheduleSearch() {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(applyReviewFilters, 400);
+function clearReviewFilterDraft() {
+  Object.assign(filterDraft, { query: "", starts: "", ends: "" });
 }
 function resetReviewFilters() {
-  clearTimeout(searchTimer);
-  Object.assign(filterDraft, { query: "", starts: "", ends: "" });
+  clearReviewFilterDraft();
   reviewFilters.value = { ...filterDraft };
   reviewPage.value = { page: 1, pages: 1, total: 0 };
 }
@@ -227,7 +224,6 @@ function logout() {
 let pollTimer;
 onUnmounted(() => {
   clearInterval(pollTimer);
-  clearTimeout(searchTimer);
 });
 onMounted(async () => {
   pollTimer = setInterval(() => {
@@ -432,7 +428,7 @@ onMounted(async () => {
         <form
           v-if="user && viewRole === 'counselor'"
           class="review-filters"
-          @submit.prevent="applyReviewFilters"
+          @submit.prevent
         >
           <label class="review-search"
             >搜索申请<input
@@ -441,36 +437,34 @@ onMounted(async () => {
               maxlength="100"
               placeholder="姓名、事项或请假原因"
               :disabled="busy"
-              @input="scheduleSearch"
           /></label>
           <label
             >请假开始日期<input
               v-model="filterDraft.starts"
               type="date"
               :disabled="busy"
-              @change="applyReviewFilters"
           /></label>
           <label
             >请假结束日期<input
               v-model="filterDraft.ends"
               type="date"
               :disabled="busy"
-              @change="applyReviewFilters"
           /></label>
           <div class="actions">
-            <button type="submit" :disabled="busy || !!filterError">
+            <button
+              type="button"
+              :disabled="busy || !!filterError"
+              @click="applyReviewFilters"
+            >
               搜索
             </button>
             <button
               type="button"
               class="light"
               :disabled="busy"
-              @click="
-                resetReviewFilters();
-                run(loadRecords);
-              "
+              @click="clearReviewFilterDraft"
             >
-              清除筛选
+              清空条件
             </button>
           </div>
           <p v-if="filterError" class="inline-error" role="alert">

@@ -50,14 +50,28 @@ const viewingDocument = ref(null);
 const withdrawalDialog = ref(null);
 const withdrawalReason = ref("");
 let previewGeneration = 0;
+const hasCurrentPreview = computed(
+  () =>
+    preview.value &&
+    preparedOpinion.value === opinion.value.trim() &&
+    !viewingDocument.value,
+);
 const canApprove = computed(
   () =>
     pendingReview.value &&
-    preparedOpinion.value === opinion.value.trim() &&
-    preview.value &&
-    !viewingDocument.value &&
+    !props.busy &&
+    props.signatureVersion &&
+    hasCurrentPreview.value &&
     confirmed.value,
 );
+const approvalHint = computed(() => {
+  if (props.busy) return "正在提交审批…";
+  if (!props.signatureVersion) return "请先保存个人签名。";
+  if (!preview.value && previewBusy.value) return "正在准备审批预览…";
+  if (!preview.value) return "请先加载审批预览，再勾选确认。";
+  if (!hasCurrentPreview.value) return "请先更新审批预览，再勾选确认。";
+  return "请先勾选确认。";
+});
 function clearPreview() {
   previewGeneration++;
   previewController?.abort();
@@ -176,7 +190,7 @@ async function viewDocument(document) {
   }
 }
 function approve() {
-  if (!canApprove.value || props.busy) return;
+  if (!canApprove.value) return;
   emit("decision", {
     id: props.request.id,
     outcome: "approved",
@@ -387,23 +401,20 @@ const fileStatuses = {
             ><input
               v-model="confirmed"
               type="checkbox"
-              :disabled="busy || !preview || preparedOpinion !== opinion.trim()"
+              :disabled="busy || !signatureVersion || !hasCurrentPreview"
             />我已核对申请信息并确认使用当前签名签署</label
           >
           <div class="actions">
             <button
-              v-if="
-                !preview || preparedOpinion !== opinion.trim() || previewError
-              "
+              v-if="!hasCurrentPreview || previewError"
               class="light"
               :disabled="busy || previewBusy || !signatureVersion"
               @click="openPreview"
             >
               {{ preview ? "更新审批预览" : "加载审批预览" }}
             </button>
-            <button :disabled="busy || !canApprove" @click="approve">
-              确认通过并签署
-            </button>
+            <button v-if="canApprove" @click="approve">确认通过并签署</button>
+            <span v-else class="caption" role="status">{{ approvalHint }}</span>
             <button
               class="danger"
               :disabled="busy || !opinion.trim()"

@@ -1,4 +1,7 @@
 import io
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 from pypdf import PdfReader
 from test_workflow import client, login, payload, submit, approve
@@ -37,6 +40,7 @@ def test_modes_preview_approval_and_pdf(client,mode,layout,count):
         assert ('该生因参加学术交流，经辅导员审核' if mode=='date_range' else '该生因参加学术交流，申请于') in text
         if mode=='date_range':
             assert '共 3 天' in text and '组织行为学' not in text
+            assert '2026年10月1日至2026年10月3日' in text
         else:
             assert '共 2 天' not in text and '共 3 天' not in text
             if layout=='separate':
@@ -120,6 +124,8 @@ def test_items_pdf_uses_requested_wording_without_type_or_typed_signature(client
     approved=approve(client,row['id']).json()
     assert approved['approval']['approver']=='counselor-a'
     text=pdf_text(client.get('/api/documents/'+approved['documents'][0]['id']))
-    assert '该生因参加学术交流，申请于2026 年 10 月 1 日第 1-2 节请假组织行为学。' in text
+    assert '该生因参加学术交流，申请于2026年10月1日第 1-2 节请假组织行为学。' in text
+    signed = datetime.fromisoformat(approved['approval']['at']).astimezone(ZoneInfo('Asia/Shanghai'))
+    assert f'{signed.year}年{signed.month}月{signed.day}日' in text
     assert 'counselor-a' not in text and '辅导员签字' in text
     assert '事项类型' not in text and '志愿者活动' not in text
